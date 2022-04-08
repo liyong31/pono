@@ -1,0 +1,16 @@
+(declare-const c Int)
+(declare-const d Int)
+(declare-const c.next Int)
+(declare-const d.next Int)
+
+(define-fun sv1 () Int (! c :next c.next))
+(define-fun sv2 () Int (! d :next d.next))
+
+(define-fun init () Bool
+(! (and (>= c d) (= d 1)) :init true))
+
+(define-fun trans () Bool
+(! (and (= c.next (+ c d)) (= d.next (+ d 1))) :trans true))
+
+(define-fun prop () Bool
+(! (=> (> d 2) (> c d)) :invar-property 0))  
