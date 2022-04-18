@@ -23,6 +23,7 @@
 #include "engines/cegar_values.h"
 #include "engines/ic3bits.h"
 #include "engines/ic3ia.h"
+#include "engines/ic3car.h"
 #include "engines/ic3sa.h"
 #include "engines/interpolantmc.h"
 #include "engines/kinduction.h"
@@ -45,6 +46,7 @@ vector<Engine> all_engines()
            #ifdef WITH_MSAT
            INTERP,
            IC3IA_ENGINE,
+           IC3IA_CAR,
            #endif
            IC3SA_ENGINE
   };
@@ -79,6 +81,13 @@ shared_ptr<Prover> make_prover(Engine e,
 #else
     throw PonoException(
         "IC3IA uses MathSAT for interpolants, but not built with MathSAT");
+#endif
+  } else if (e == IC3IA_CAR) {
+#ifdef WITH_MSAT
+    return make_shared<IC3CAR>(p, ts, slv, opts);
+#else
+    throw PonoException(
+        "IC3CAR uses MathSAT for interpolants, but not built with MathSAT");
 #endif
 #ifdef WITH_MSAT_IC3IA
   } else if (e == MSAT_IC3IA) {

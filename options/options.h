@@ -39,7 +39,8 @@ enum Engine
   IC3IA_ENGINE,
   MSAT_IC3IA,
   IC3SA_ENGINE,
-  SYGUS_PDR
+  SYGUS_PDR,
+  IC3IA_CAR
   // NOTE: if adding an IC3 variant,
   // make sure to update ic3_variants_set in options/options.cpp
   // used for setting solver options appropriately
@@ -65,7 +66,8 @@ const std::unordered_map<std::string, Engine> str2engine(
       { "ic3ia", IC3IA_ENGINE },
       { "msat-ic3ia", MSAT_IC3IA },
       { "ic3sa", IC3SA_ENGINE },
-      { "sygus-pdr", SYGUS_PDR } });
+      { "sygus-pdr", SYGUS_PDR },
+      { "ic3car", IC3IA_CAR} });
 
 // SyGuS mode option
 enum SyGuSTermMode{
@@ -132,6 +134,7 @@ class PonoOptions
         ic3sa_initial_terms_lvl_(default_ic3sa_initial_terms_lvl_),
         ic3sa_interp_(default_ic3sa_interp_),
         bmc_sampling_(default_bmc_sampling_),
+        uf_abstraction_(default_uf_abstraction_),
         print_wall_time_(default_print_wall_time_)
   {
   }
@@ -219,6 +222,8 @@ class PonoOptions
   bool print_wall_time_;
   // perform sampling before bmc
   bool bmc_sampling_;
+  // uf abstraction
+  bool uf_abstraction_;
 
  private:
   // Default options
@@ -270,6 +275,7 @@ class PonoOptions
   static const bool default_ic3sa_interp_ = false;
   static const bool default_print_wall_time_ = false;
   static const bool default_bmc_sampling_ = false;
+  static const bool default_uf_abstraction_ = false;
 };
 
 // Useful functions for printing etc...

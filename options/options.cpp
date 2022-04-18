@@ -73,6 +73,7 @@ enum optionIndex
   IC3SA_INITIAL_TERMS_LVL,
   IC3SA_INTERP,
   BMC_SAMPLE,
+  UF_ABSTRACTION,
   PRINT_WALL_TIME
 };
 
@@ -123,7 +124,7 @@ const option::Descriptor usage[] = {
     "engine",
     Arg::NonEmpty,
     "  --engine, -e <engine> \tSelect engine from [bmc, bmc-sp, ind, "
-    "interp, mbic3, ic3bits, ic3ia, msat-ic3ia, ic3sa, sygus-pdr]." },
+    "interp, mbic3, ic3bits, ic3ia, msat-ic3ia, ic3sa, ic3car, sygus-pdr]." },
   { BOUND,
     0,
     "k",
@@ -181,6 +182,12 @@ const option::Descriptor usage[] = {
     "bmc-sample",
     Arg::None,
     "  --bmc-sample \tSampling for bounded model checking."},
+  { UF_ABSTRACTION,
+    0,
+    "",
+    "uf-abs",
+    Arg::None,
+    "  --uf-abs \tApply uninterpreted function for abstraction."},
   { STATICCOI,
     0,
     "",
@@ -438,7 +445,8 @@ const std::unordered_set<Engine> ic3_variants_set({ IC3_BOOL,
                                                     IC3IA_ENGINE,
                                                     MSAT_IC3IA,
                                                     IC3SA_ENGINE,
-                                                    SYGUS_PDR });
+                                                    SYGUS_PDR,
+                                                    IC3IA_CAR });
 
 const std::unordered_set<Engine> & ic3_variants() { return ic3_variants_set; }
 
@@ -524,6 +532,7 @@ ProverResult PonoOptions::parse_and_set_options(int argc,
         case LOGGING_SMT_SOLVER: logging_smt_solver_ = true; break;
         case WITNESS: witness_ = true; break;
         case BMC_SAMPLE: bmc_sampling_ = true; break;
+        case UF_ABSTRACTION: uf_abstraction_ = true; break;
         case STATICCOI: static_coi_ = true; break;
         case SHOW_INVAR: show_invar_ = true; break;
         case CHECK_INVAR: check_invar_ = true; break;
@@ -676,6 +685,10 @@ string to_string(Engine e)
     }
     case SYGUS_PDR: {
       res = "sygus-pdr";
+      break;
+    }
+    case IC3IA_CAR: {
+      res = "ic3car";
       break;
     }
     default: {

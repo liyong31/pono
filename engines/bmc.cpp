@@ -84,23 +84,6 @@ Term Bmc::obtain_model_values(UnorderedTermMap & map, bool next)
       state = solver_->make_term(And, state, solver_->make_term(Equal, v, r));
       //logger.log(1, "returned state: {}", state);
     }
-    //logger.log(2, "returned state: {}", state);
-    // if (! next)
-    // {
-    //   return state;
-    // }
-    
-    // logger.log(1, "input size: {}", ts_.inputvars().size());
-    // for (const auto &v : ts_.inputvars()) {
-    //   const Term &vi = v;
-    //   const Term &r = solver_->get_value(vi);
-    //   map[v] = r;
-    // }
-    // logger.log(1, " named_termize: {}", ts_.named_terms().size());
-    // for (const auto &elem : ts_.named_terms()) {
-    //   const Term &ti = elem.second;
-    //   map[elem.second] = solver_->get_value(ti);
-    // }
 
     return state;
 }
