@@ -790,13 +790,14 @@ void IC3Base::push_frame()
   frame_labels_.push_back(
       solver_->make_symbol("__frame_label_" + std::to_string(frames_.size()),
                            solver_->make_sort(BOOL)));
-  frames_.push_back({});
+  frames_.push_back({});// for ic3, it is P, but for car it is !P
 
   if (frames_.size() > 1) {
     // always start (non-initial) frame with property
     // not actually adding to frames_ because might not be a valid IC3Formula
     // plus we don't need to do extra work to propagate it
-    Term prop = smart_not(bad_);
+    // If it engine is IC3IA_CAR, we put bad_ instead of prop
+    Term prop = (options_.engine_ == IC3IA_CAR) ? ts_.next(bad_) : smart_not(bad_);
     // _frame_label_ -> prop
     solver_->assert_formula(
         solver_->make_term(Implies, frame_labels_.back(), prop));

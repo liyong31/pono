@@ -41,9 +41,9 @@ using namespace std;
 namespace pono {
 
 IC3CAR::IC3CAR(const Property & p,
-             const TransitionSystem & ts,
-             const SmtSolver & s,
-             PonoOptions opt)
+               const TransitionSystem & ts,
+               const SmtSolver & s,
+               PonoOptions opt)
     : super(p, RelationalTransitionSystem(s), s, opt),
       conc_ts_(ts, to_prover_solver_),
       ia_(conc_ts_, ts_, unroller_),
@@ -84,12 +84,15 @@ IC3Formula IC3CAR::get_model_ic3formula() const
   conjuncts.reserve(predlbls_.size());
   Term val;
   for (const auto & p : predlbls_) {
-    if ((val = solver_->get_value(p)) == solver_true_) {
-      conjuncts.push_back(lbl2pred_.at(p));
-      logger.log(3, "get_model_ic3formula model pred: {}", lbl2pred_.at(p));
+    Term nextp = lbl2nlbl_.at(p); // current to next 
+    if ((val = solver_->get_value(nextp)) == solver_true_) {
+      conjuncts.push_back(nlbl2npred_.at(p));
+      logger.log(3, "get_model_ic3formula model pred: {}", nlbl2npred_.at(p));
     } else {
-      conjuncts.push_back(solver_->make_term(Not, lbl2pred_.at(p)));
-      logger.log(3, "get_model_ic3formula model pred: {}", solver_->make_term(Not, lbl2pred_.at(p)));
+      conjuncts.push_back(solver_->make_term(Not, nlbl2npred_.at(p)));
+      logger.log(3,
+                 "get_model_ic3formula model pred: {}",
+                 solver_->make_term(Not, nlbl2npred_.at(p)));
     }
     assert(val->is_value());
   }
@@ -102,7 +105,7 @@ bool IC3CAR::ic3formula_check_valid(const IC3Formula & u) const
   // check that children are literals
   Term pred;
   Op op;
-  for (const auto &c : u.children) {
+  for (const auto & c : u.children) {
     if (c->get_sort() != boolsort_) {
       logger.log(3, "ERROR IC3CAR IC3Formula contains non-boolean atom: {}", c);
       return false;
@@ -134,13 +137,24 @@ void IC3CAR::check_ts() const
   // exception better than maintaining in two places
 }
 
+void IC3CAR::push_under_frame()
+{
+  assert(under_frame_labels_.size() == under_frames_.size());
+  // pushes an empty frame
+  under_frame_labels_.push_back(solver_->make_symbol(
+      "__under_frame_label_" + std::to_string(under_frames_.size()),
+      solver_->make_sort(BOOL)));
+  under_frames_.push_back({});  // by default, the frame_ is empty
+}
+
 void IC3CAR::initialize()
 {
   if (initialized_) {
     return;
   }
-
-  super::initialize(); // create boolsort and true iterm, abstract() ts
+  // call IC3Base::initialize()
+  super::initialize();  // create boolsort and true iterm, abstract() ts
+  push_under_frame();
 
   // add all the predicates from init and property to the abstraction
   // NOTE: abstract is called automatically in IC3Base initialize
@@ -149,7 +163,7 @@ void IC3CAR::initialize()
   size_t num_init_preds = preds.size();
   get_predicates(solver_, bad_, preds, false, false, true);
   size_t num_prop_preds = preds.size() - num_init_preds;
-  for (const auto &p : preds) {
+  for (const auto & p : preds) {
     add_predicate(p);
   }
   logger.log(1, "Number predicates found in init: {}", num_init_preds);
@@ -161,7 +175,7 @@ void IC3CAR::initialize()
   // populate cache for existing terms in solver_
   UnorderedTermMap & cache = to_solver_.get_cache();
   Term ns;
-  for (auto const&s : ts_.statevars()) {
+  for (auto const & s : ts_.statevars()) {
     // common variables are next states, unless used for refinement in IC3CAR
     // then will refer to current state variables after untiming
     // need to cache both
@@ -179,7 +193,7 @@ void IC3CAR::initialize()
   get_free_symbols(ts_.trans(), free_symbols);
   get_free_symbols(bad_, free_symbols);
 
-  for (auto const&s : free_symbols) {
+  for (auto const & s : free_symbols) {
     assert(s->is_symbol());
     if (s->is_symbolic_const()) {
       // ignore constants
@@ -200,9 +214,309 @@ void IC3CAR::initialize()
   }
 }
 
+ProverResult IC3CAR::step_0()
+{
+  // initially reach_k == -1
+  assert(reached_k_ < 0);
+  logger.log(1, "Checking if initial states satisfy property");
+
+  push_solver_context();  // create a context for this solving procedure
+  solver_->assert_formula(init_label_);
+  logger.log(3, "push init: {}", init_label_);
+  solver_->assert_formula(bad_);
+  logger.log(3, "push bad: {}", bad_);
+  Result r = check_sat();
+  if (r.is_sat()) {
+    pop_solver_context();
+    // trace is only one bad state that intersects with initial
+    cex_.clear();
+    cex_.push_back(bad_);
+    return ProverResult::FALSE;
+  } else {
+    assert(r.is_unsat());
+    reached_k_ = 0;  // keep reached_k_ aligned with number of frames
+  }
+  pop_solver_context();
+  // end of I /\ bad
+
+  return ProverResult::UNKNOWN;
+}
+
+void IC3CAR::successor_generalization_and_fix(size_t i, const Term & c,
+                                                 IC3Formula & pred)
+{
+  logger.log(3, "succ_and_fix: {}, {}, {}", i, c, pred.term);
+  TermVec orig_pred_children;
+  if (approx_pregen_) {
+    assert(!pred.disjunction);
+    // save original predecessor conjuncts
+    orig_pred_children = pred.children;
+    assert(orig_pred_children.size());
+  }
+
+  predecessor_generalization(i, c, pred); // no implementation by default
+
+  logger.log(3, "approx_pregen_: {}", approx_pregen_);
+
+  //if (approx_pregen_ && i >= 1) {
+    TermVec dropped;
+    assert(orig_pred_children.size());
+    TermVec pred_children = pred.children;
+    UnorderedTermSet reduced_pred_children(pred_children.begin(),
+                                           pred_children.end());
+    for (const auto & cc : orig_pred_children) {
+      if (reduced_pred_children.find(cc) == reduced_pred_children.end()) {
+        dropped.push_back(cc);
+      }
+    }
+    // if predecessor generalization is approximate
+    // need to make sure it does not intersect with F[i-2]
+    //Term formula = frame_labels_[i]; // redudant
+    //formula = solver_->make_term(And, formula, pred.term);
+    //bool unsat =
+    //    reducer_.reduce_assump_unsatcore(formula, dropped, pred_children);
+    // assert(unsat);
+    pred = ic3formula_conjunction(pred_children);
+  //}
+
+  assert(pred.term);
+  assert(pred.children.size());
+  assert(!pred.disjunction);  // expecting a conjunction
+}
+
+bool IC3CAR::rel_ind_check(size_t i,
+                            const IC3Formula & s,
+                            IC3Formula & out,
+                            bool get_pred)
+{
+  assert(i > 0);
+  assert(i < frames_.size());
+  // expecting to be the polarity for proof goals, not frames
+  // e.g. a conjunction
+  assert(!s.disjunction);
+
+  assert(solver_context_ == 0);
+  push_solver_context();
+
+  // add O'[i]
+  // assert frame labels
+  {
+    solver_->assert_formula(frame_labels_[i]);
+  }
+  // add s
+  solver_->assert_formula(s.term);
+  // add Trans
+  assert_trans_label();
+
+  // use assumptions for c' so we can get cheap initial
+  // generalization if the check is unsat
+
+  // NOTE: relying on same order between assumps_ and c.children
+  assumps_.clear();
+  // Obtain the literal form of the state s
+  {
+    // TODO shuffle assumps and (a copy of) c.children
+    //      if random seed is set
+    Term lbl;
+    for (const auto & cc : s.children) {
+      lbl = label(cc);
+      if (lbl != cc && !is_global_label(lbl)) {
+        // only need to add assertion if the label is not the same as ccnext
+        // could be the same if ccnext is already a literal
+        // and is not already in a global assumption
+        solver_->assert_formula(solver_->make_term(Implies, lbl, cc));
+      }
+      assumps_.push_back(lbl);
+    }
+  }
+
+  Result r = check_sat_assuming(assumps_);
+  if (r.is_sat()) {
+    if (get_pred) {
+      out = get_model_ic3formula();
+      // need to obtain the value for the next state variables
+
+      logger.log(3, "sat new proof goal: {}", out.term);
+      if (options_.ic3_pregen_) {
+        successor_generalization_and_fix(i, s.term, out);
+        assert(out.term);
+        assert(out.children.size());
+        assert(!out.disjunction);  // expecting a conjunction
+      }
+    }
+    assert(ic3formula_check_valid(out));
+  }else {
+    assert(r.is_unsat());  // not expecting to get unknown
+
+    // Use unsat core to get cheap generalization
+    // TODO minimal unsat core
+    UnorderedTermSet core;
+    solver_->get_unsat_assumptions(core);
+    assert(core.size());
+
+    TermVec gen;  // cheap unsat-core generalization of c
+    TermVec rem;  // conjuncts removed by unsat core
+    // might need to be re-added if it
+    // ends up intersecting with initial
+    assert(assumps_.size() == s.children.size());
+    for (size_t i = 0; i < assumps_.size(); ++i) {
+      if (core.find(assumps_.at(i)) == core.end()) {
+        rem.push_back(s.children.at(i));
+        logger.log(3, "orig bool predicate unsat core: {}", s.children.at(i));
+      } else {
+        gen.push_back(s.children.at(i));
+        logger.log(3, "newly bool predicate unsat core: {}", s.children.at(i));
+      }
+    }
+
+    // fix_if_intersects_initial(gen, rem);
+    assert(gen.size() >= core.size());
+
+    // keep it as a conjunction for now
+    out = ic3formula_conjunction(gen);
+    logger.log(3, "generalized c: {}", out.term);
+  }
+  // else {
+  //  assert(r.is_unsat());  // not expecting to get unknown
+    // don't generalize with an unsat core, just keep c
+  //  out = s;
+  //  logger.log(3, "No generalize only keep c: {}", c.term);
+  //}
+
+  pop_solver_context();
+  assert(!solver_context_);
+
+  if (r.is_sat() && get_pred) {
+    assert(out.term);
+    assert(out.children.size());
+
+    // this check needs to be here after the solver context has been popped
+    // if i == 1 and there's a predecessor, then it should be an initial state
+    assert(i != 1 || check_intersects_initial(out.term));
+
+    // should never intersect with a frame before F[i-1]
+    // otherwise, this predecessor should have been found
+    // in a previous step (before a new frame was pushed)
+    assert(i < 2 || !check_intersects(out.term, get_frame_term(i - 2)));
+  }
+
+  assert(!r.is_unknown());
+  return r.is_unsat();
+}
+
+bool IC3CAR::is_blocked(ProofGoalQueue& proof_goals)
+{
+  while (!proof_goals.empty()) {
+      const ProofGoal * pg = proof_goals.top();
+      IC3Formula s = pg->target;
+      int l = pg->idx;
+      // 1. check whether it has been traced back to initial
+      if (pg->idx < 0) {
+        // went all the way back to initial
+        // need to create a new proof goal that's not managed by the queue
+        reconstruct_trace(pg, cex_);
+
+        // in case this is spurious, clear the queue of proof goals
+        // which might not have been precise
+        // TODO might have to change this if there's an algorithm
+        // that refines but can keep proof goals around
+        proof_goals.clear();
+
+        return false;
+      }
+
+      // 2. IsSATAssuming(s, T/\O'_l)
+      IC3Formula out;
+      if (rel_ind_check(pg->idx, pg->target, out)) {
+        // t(1) = getModel|primed_version
+        // Extending U
+        // stack.push(t, l-1)
+      }else {
+        // stack.pop()
+
+        proof_goals.pop();
+        // uc := GetUnsatCore()
+        // extending Over and Otmp
+        
+        if (l + 1 < frames_.size()) {
+          // add (s, l+1) to stack
+          proof_goals.new_proof_goal(s, l+1);
+        }
+      }
+  }
+  // check whether we have reached a fixed point
+
+}
+
+void IC3CAR::pick_state(IC3Formula& out)
+{
+
+}
+
+ProverResult IC3CAR::check_until(int k)
+{
+  initialize();
+  // make sure derived class implemented initialize and called
+  // this version of initialize with super::initialize or
+  // (for experts only) set the initialized_ flag without
+  // ever initializing base classes
+  assert(initialized_);
+
+  ProverResult res;
+  RefineResult ref_res;
+  int i = reached_k_ + 1; // value should be zero now
+  assert(reached_k_ + 1 >= 0);
+  while (i <= k) {
+    // 1. first pick a state from the U
+    
+    Term tmp = bad_;
+    ProofGoalQueue proof_goals;
+
+    IC3Formula goal;
+    pick_state(goal);
+
+    int frame_level = frames_.size() - 1;
+    proof_goals.new_proof_goal(goal, frontier_idx(), nullptr);
+
+    ProverResult res = UNKNOWN; 
+
+    if (is_blocked(proof_goals)) {
+      res = ProverResult::TRUE;
+    }else {
+      res = ProverResult::FALSE;
+    }
+
+    if (res == ProverResult::FALSE) {
+      assert(cex_.size());
+      RefineResult s = refine();
+      if (s == REFINE_SUCCESS) {
+        continue;
+      } else if (s == REFINE_NONE) {
+        // this is a real counterexample
+        assert(cex_.size());
+        return ProverResult::FALSE;
+      } else {
+        assert(s == REFINE_FAIL);
+        logger.log(1, "IC3CAR: refinement failure, returning unknown");
+        return ProverResult::UNKNOWN;
+      }
+    } else {
+      ++i;
+    }
+
+    if (res != ProverResult::UNKNOWN) {
+      return res;
+    }
+  }
+
+  return ProverResult::UNKNOWN;
+}
+
 void IC3CAR::abstract()
 {
-  const UnorderedTermSet &bool_symbols = ia_.do_abstraction(); //create v.next <-> v.next^ values, and replace trans with new abstract ones
+  const UnorderedTermSet & bool_symbols =
+      ia_.do_abstraction();  // create v.next <-> v.next^ values, and replace
+                             // trans with new abstract ones
   // the set of boolean varibles present in system is returned
 
   // don't add boolean symbols that are never used in the system
@@ -274,7 +588,7 @@ RefineResult IC3CAR::refine()
   longest_cex_length_ = cex_length;
 
   UnorderedTermSet preds;
-  for (auto const&I : out_interpolants) {
+  for (auto const & I : out_interpolants) {
     if (!I) {
       assert(
           r.is_unknown());  // should only have null terms if got unknown result
@@ -289,7 +603,7 @@ RefineResult IC3CAR::refine()
 
   // new predicates
   TermVec fresh_preds;
-  for (auto const&p : preds) {
+  for (auto const & p : preds) {
     if (predset_.find(p) == predset_.end()) {
       // unseen predicate
       fresh_preds.push_back(p);
@@ -390,20 +704,22 @@ void IC3CAR::reabstract()
   // predicates from init and bad
   get_predicates(solver_, ts_.init(), preds, false, false, true);
   get_predicates(solver_, bad_, preds, false, false, true);
-  // instead of add previously found predicates, we add all the predicates in frame 1
+  // instead of add previously found predicates, we add all the predicates in
+  // frame 1
   get_predicates(solver_, get_frame_term(1), preds, false, false, true);
 
   super::reset_solver();
   if (failed_to_reset_solver_) {
-    throw PonoException("IC3CAR::reabstract Cannot reabstract because "
-                        "the underlying SMT solver doesn't support "
-                        "the reset-solver method");
+    throw PonoException(
+        "IC3CAR::reabstract Cannot reabstract because "
+        "the underlying SMT solver doesn't support "
+        "the reset-solver method");
   }
   predset_.clear();
   predlbls_.clear();
 
   // add predicates
-  for (const auto &p : preds) {
+  for (const auto & p : preds) {
     add_predicate(p);
   }
 }
@@ -421,25 +737,31 @@ bool IC3CAR::add_predicate(const Term & pred)
   assert(pred->get_sort() == boolsort_);
   assert(pred->is_symbolic_const() || is_predicate(pred, boolsort_));
 
-  Term lbl = label(pred); // create boolean symbol for the predicate
+  Term lbl = label(pred);  // create boolean symbol for the predicate
   // set the negated label as well
   // can use in either polarity because we add a bi-implication
   labels_[solver_->make_term(Not, pred)] = solver_->make_term(Not, lbl);
 
-  predlbls_.insert(lbl); // predicate bool symbols
-  lbl2pred_[lbl] = pred; // bool to pred
+  predlbls_.insert(lbl);  // predicate bool symbols
+  lbl2pred_[lbl] = pred;  // bool to pred
 
-  Term npred = ts_.next(pred); // next time version of the predicate
-  Term nlbl = label(npred); 
+  Term npred = ts_.next(pred);  // next time version of the predicate
+  Term nlbl = label(npred);
+  lbl2nlbl_[lbl] = nlbl; // current to next bools
+  nlbl2npred_[nlbl] = npred;
+
   labels_[solver_->make_term(Not, npred)] = solver_->make_term(Not, nlbl);
 
   if (!pred->is_symbolic_const()) {
     // only need to assert equalities for labels that are distinct
     assert(lbl != pred);
     solver_->assert_formula(solver_->make_term(Equal, lbl, pred));
-    logger.log(3, "adding predicate equals {}", solver_->make_term(Equal, lbl, pred));
+    logger.log(
+        3, "adding predicate equals {}", solver_->make_term(Equal, lbl, pred));
     solver_->assert_formula(solver_->make_term(Equal, nlbl, npred));
-    logger.log(3, "adding next predicate equals {}", solver_->make_term(Equal, nlbl, npred));
+    logger.log(3,
+               "adding next predicate equals {}",
+               solver_->make_term(Equal, nlbl, npred));
 
     // only need to modify transition relation for non constants
     // boolean constants will be precise
@@ -452,7 +774,9 @@ bool IC3CAR::add_predicate(const Term & pred)
     assert(!solver_context_);  // should be at context 0
     solver_->assert_formula(
         solver_->make_term(Implies, trans_label_, predabs_rel));
-    logger.log(3, "adding predicate equals {}", solver_->make_term(Implies, trans_label_, predabs_rel));
+    logger.log(3,
+               "adding predicate equals {}",
+               solver_->make_term(Implies, trans_label_, predabs_rel));
   }
 
   // keep track of the labels and different polarities for debugging assertions
@@ -472,7 +796,7 @@ void IC3CAR::register_symbol_mappings(size_t i)
 
   UnorderedTermMap & cache = to_solver_.get_cache();
   Term unrolled_sv;
-  for (const auto &sv : ts_.statevars()) {
+  for (const auto & sv : ts_.statevars()) {
     unrolled_sv = unroller_.at_time(sv, i);
     cache[to_interpolator_.transfer_term(unrolled_sv)] = unrolled_sv;
   }

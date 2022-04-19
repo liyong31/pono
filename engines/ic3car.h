@@ -73,6 +73,12 @@ class IC3CAR : public IC3
   size_t longest_cex_length_;  ///< keeps track of longest (abstract)
                                ///< counterexample
 
+  ///< the under-approximate data structure.
+  ///< a vector of the given Unit template
+  ///< which changes depending on the implementation
+  std::vector<std::vector<IC3Formula>> under_frames_;
+  smt::TermVec under_frame_labels_;  ///< labels to activate under frames
+
   // Since MathSAT is the best solver for IC3CAR it helps to use
   // its bool_model_generation option which doesn't enable
   // model generation for theories
@@ -80,6 +86,8 @@ class IC3CAR : public IC3
   // predicates. This should still work fine with other solvers
   smt::UnorderedTermMap lbl2pred_;
   smt::UnorderedTermSet predlbls_;
+  smt::UnorderedTermMap lbl2nlbl_;
+  smt::UnorderedTermMap nlbl2npred_;
   smt::UnorderedTermSet all_lbls_;  ///< for debugging assertions only
                                     ///< keeps track of both polarities
                                     ///< mostly needed because some solvers
@@ -107,6 +115,8 @@ class IC3CAR : public IC3
 
   RefineResult refine() override;
 
+  void push_under_frame();
+
   void reset_solver() override;
 
   bool is_global_label(const smt::Term & l) const override;
@@ -132,6 +142,25 @@ class IC3CAR : public IC3
    *         makes sure not to repeat work
    */
   void register_symbol_mappings(size_t i);
+
+  ProverResult step_0();
+
+  //virtual ProverResult step(int i);
+
+  virtual ProverResult check_until(int k);
+
+  bool is_blocked(ProofGoalQueue& proof_goals);
+
+  virtual bool rel_ind_check(size_t i,
+                            const IC3Formula & c,
+                            IC3Formula & out,
+                            bool get_pred = true);
+
+  void pick_state(IC3Formula& out);
+
+  void successor_generalization_and_fix(size_t i,
+                                                 const Term & c,
+                                                 IC3Formula & pred);
 };
 
 }  // namespace pono
