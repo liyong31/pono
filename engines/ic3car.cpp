@@ -9,7 +9,7 @@
 ** All rights reserved.  See the file LICENSE in the top-level source
 ** directory for licensing information.\endverbatim
 **
-** \brief IC3 via Implicit Predicate Abstraction (IC3IA) implementation
+** \brief CAR via Implicit Predicate Abstraction (IC3IA) implementation
 **        based on
 **
 **        IC3 Modulo Theories via Implicit Predicate Abstraction
@@ -86,13 +86,13 @@ IC3Formula IC3CAR::get_model_ic3formula() const
   for (const auto & p : predlbls_) {
     Term nextp = lbl2nlbl_.at(p); // current to next 
     if ((val = solver_->get_value(nextp)) == solver_true_) {
-      conjuncts.push_back(nlbl2npred_.at(p));
-      logger.log(3, "get_model_ic3formula model pred: {}", nlbl2npred_.at(p));
+      conjuncts.push_back(nlbl2npred_.at(nextp));
+      logger.log(3, "get_model_ic3formula model npred: {}", nlbl2npred_.at(nextp));
     } else {
-      conjuncts.push_back(solver_->make_term(Not, nlbl2npred_.at(p)));
+      conjuncts.push_back(solver_->make_term(Not, nlbl2npred_.at(nextp)));
       logger.log(3,
-                 "get_model_ic3formula model pred: {}",
-                 solver_->make_term(Not, nlbl2npred_.at(p)));
+                 "get_model_ic3formula model npred: {}",
+                 solver_->make_term(Not, nlbl2npred_.at(nextp)));
     }
     assert(val->is_value());
   }
@@ -147,6 +147,19 @@ void IC3CAR::push_under_frame()
   under_frames_.push_back({});  // by default, the frame_ is empty
 }
 
+void IC3CAR::push_over_frontier()
+{
+  //next_bad_label_ =
+  //   solver_->make_symbol("__next_bad_label_",
+  //                         solver_->make_sort(BOOL));
+  //Term next_bad =  ts_.next(bad_);
+  //solver_->assert_formula(
+  //      solver_->make_term(Implies, next_bad_label_, next_bad));
+  //frames_.push_back({});
+  //logger.log(
+  //          3, "Add over frame formula {}: {}", frames_.size() - 1, solver_->make_term(Implies, next_bad_label_, next_bad));
+}
+
 void IC3CAR::initialize()
 {
   if (initialized_) {
@@ -154,6 +167,7 @@ void IC3CAR::initialize()
   }
   // call IC3Base::initialize()
   super::initialize();  // create boolsort and true iterm, abstract() ts
+  //push_over_frontier(); // add bad
   push_under_frame();
 
   // add all the predicates from init and property to the abstraction
@@ -221,8 +235,8 @@ ProverResult IC3CAR::step_0()
   logger.log(1, "Checking if initial states satisfy property");
 
   push_solver_context();  // create a context for this solving procedure
-  solver_->assert_formula(init_label_);
-  logger.log(3, "push init: {}", init_label_);
+  solver_->assert_formula(ts_.init());
+  logger.log(3, "push init: {}", ts_.init());
   solver_->assert_formula(bad_);
   logger.log(3, "push bad: {}", bad_);
   Result r = check_sat();
@@ -238,8 +252,27 @@ ProverResult IC3CAR::step_0()
   }
   pop_solver_context();
   // end of I /\ bad
+  push_solver_context();  // create a context for this solving procedure
+  //  solver_->assert_formula(init_label_);
+  //logger.log(3, "push init: {}", init_label_);
+  assert_trans_label();
+  logger.log(3, "push trans: {}", trans_label_);
+  solver_->assert_formula(ts_.next(bad_));
+  logger.log(3, "push next bad: {}", ts_.next(bad_));
+  // end of T /\ bad'
 
-  return ProverResult::UNKNOWN;
+  ProverResult pres = ProverResult::UNKNOWN;
+  r = check_sat();
+  if (r.is_unsat()) {
+    pres = ProverResult::TRUE;
+  }
+  pop_solver_context();
+
+  return pres;
+}
+
+void IC3CAR::push_frame()
+{
 }
 
 void IC3CAR::successor_generalization_and_fix(size_t i, const Term & c,
@@ -289,7 +322,7 @@ bool IC3CAR::rel_ind_check(size_t i,
                             IC3Formula & out,
                             bool get_pred)
 {
-  assert(i > 0);
+  assert(i >= 0);
   assert(i < frames_.size());
   // expecting to be the polarity for proof goals, not frames
   // e.g. a conjunction
@@ -301,13 +334,16 @@ bool IC3CAR::rel_ind_check(size_t i,
   // add O'[i]
   // assert frame labels
   {
-    solver_->assert_formula(frame_labels_[i]);
+    //solver_->assert_formula(next_bad_label_); // add next bad
+    // we now obtain the O'_l
+    solver_->assert_formula(get_frame_formula(i));
   }
   // add s
   solver_->assert_formula(s.term);
   // add Trans
   assert_trans_label();
-
+  logger.log(1, "assert trans label");
+  // solver_->assert_formula(ts_.trans());
   // use assumptions for c' so we can get cheap initial
   // generalization if the check is unsat
 
@@ -317,6 +353,7 @@ bool IC3CAR::rel_ind_check(size_t i,
   {
     // TODO shuffle assumps and (a copy of) c.children
     //      if random seed is set
+    logger.log(3, "current s is : {}", s.term);
     Term lbl;
     for (const auto & cc : s.children) {
       lbl = label(cc);
@@ -327,15 +364,15 @@ bool IC3CAR::rel_ind_check(size_t i,
         solver_->assert_formula(solver_->make_term(Implies, lbl, cc));
       }
       assumps_.push_back(lbl);
+      logger.log(3, "add new lbl to assumps: {}, {}", lbl, cc);
     }
   }
 
   Result r = check_sat_assuming(assumps_);
   if (r.is_sat()) {
+    out = get_model_ic3formula();
     if (get_pred) {
-      out = get_model_ic3formula();
       // need to obtain the value for the next state variables
-
       logger.log(3, "sat new proof goal: {}", out.term);
       if (options_.ic3_pregen_) {
         successor_generalization_and_fix(i, s.term, out);
@@ -347,9 +384,9 @@ bool IC3CAR::rel_ind_check(size_t i,
     assert(ic3formula_check_valid(out));
   }else {
     assert(r.is_unsat());  // not expecting to get unknown
-
+    logger.log(3, "unsat and obtain core: {}", r.is_unsat());
     // Use unsat core to get cheap generalization
-    // TODO minimal unsat core
+    // TODO Obtain minimal unsat core
     UnorderedTermSet core;
     solver_->get_unsat_assumptions(core);
     assert(core.size());
@@ -362,18 +399,22 @@ bool IC3CAR::rel_ind_check(size_t i,
     for (size_t i = 0; i < assumps_.size(); ++i) {
       if (core.find(assumps_.at(i)) == core.end()) {
         rem.push_back(s.children.at(i));
-        logger.log(3, "orig bool predicate unsat core: {}", s.children.at(i));
+        logger.log(3, "not in unsat core: {}, {}", assumps_.at(i), s.children.at(i));
       } else {
         gen.push_back(s.children.at(i));
-        logger.log(3, "newly bool predicate unsat core: {}", s.children.at(i));
+        logger.log(3, "in unsat core: {}, {}", assumps_.at(i), s.children.at(i));
       }
     }
 
-    // fix_if_intersects_initial(gen, rem);
+    // DO WE NEED THIS?
+    //fix_if_intersects_initial(gen, rem);
     assert(gen.size() >= core.size());
-
+    TermVec ngen;
+    for (Term c : gen) {
+      ngen.push_back(ts_.next(c));
+    }
     // keep it as a conjunction for now
-    out = ic3formula_conjunction(gen);
+    out = ic3formula_conjunction(ngen);
     logger.log(3, "generalized c: {}", out.term);
   }
   // else {
@@ -397,23 +438,53 @@ bool IC3CAR::rel_ind_check(size_t i,
     // should never intersect with a frame before F[i-1]
     // otherwise, this predecessor should have been found
     // in a previous step (before a new frame was pushed)
-    assert(i < 2 || !check_intersects(out.term, get_frame_term(i - 2)));
+    //assert(i < 2 || !check_intersects(out.term, get_frame_term(i - 2)));
   }
 
   assert(!r.is_unknown());
-  return r.is_unsat();
+  return r.is_sat();
 }
 
-bool IC3CAR::is_blocked(ProofGoalQueue& proof_goals)
+void IC3CAR::add_to_under_frame(IC3Formula& t, int j)
+{
+  // j must exists
+  assert (j -1 < under_frames_.size());
+  if (j >= under_frames_.size()) {
+    under_frames_.push_back({});
+  }
+  logger.log(3, "add to under_frame: u[{}] = {}", (j), t.term);
+  under_frames_[j].push_back(t);
+}
+
+void IC3CAR::reconstruct_trace(const ProofGoal * pg, TermVec & out)
+{
+  assert(!solver_context_);
+  assert(pg);
+  assert(pg->target.term);
+  assert(check_intersects_initial(pg->target.term));
+
+  out.clear();
+  //out.push_back(bad_); //we need to
+  while (pg) {
+    logger.log(3, "cex: {}", pg->target.term);
+    out.push_back(pg->target.term);
+    assert(ts_.only_curr(out.back()));
+    pg = pg->next;
+  }
+  // since the first cex is at bad
+  std::reverse(out.begin(), out.end());
+}
+
+bool IC3CAR::is_blocked(ProofGoalQueue& proof_goals, int j, std::vector<IC3Formula>& frame_tmp)
 {
   while (!proof_goals.empty()) {
       const ProofGoal * pg = proof_goals.top();
       IC3Formula s = pg->target;
-      int l = pg->idx;
+      size_t l = pg->idx - 1; // by default we pass l + 1 for the goal
+      logger.log(3, "proof goal: (s = {}, l = {})", pg->target.term, ((int)(pg->idx) - 1));
       // 1. check whether it has been traced back to initial
-      if (pg->idx < 0) {
-        // went all the way back to initial
-        // need to create a new proof goal that's not managed by the queue
+      if (pg->idx <= 0) {
+        // went all the way back to bad, we need to trace back to initial
         reconstruct_trace(pg, cex_);
 
         // in case this is spurious, clear the queue of proof goals
@@ -427,30 +498,120 @@ bool IC3CAR::is_blocked(ProofGoalQueue& proof_goals)
 
       // 2. IsSATAssuming(s, T/\O'_l)
       IC3Formula out;
-      if (rel_ind_check(pg->idx, pg->target, out)) {
+      if (rel_ind_check(l, pg->target, out)) {
         // t(1) = getModel|primed_version
+        TermVec conjuncts;
+        for (const auto & c : out.children) {
+          conjuncts.push_back(ts_.curr(c));
+        }
+        IC3Formula t = ic3formula_conjunction(conjuncts);
+        add_to_under_frame(t, j + 1); // add to U[j + 1]
         // Extending U
         // stack.push(t, l-1)
+        logger.log(3, "add new proof goal: ({}, {})", t.term, (((int)l)-1));
+        proof_goals.new_proof_goal(t, l, pg); // need to remove t from O[l-1], pass l -1 + 1
       }else {
         // stack.pop()
-
         proof_goals.pop();
         // uc := GetUnsatCore()
-        // extending Over and Otmp
-        
+        // extending Over and Otmp. already it is current version
+        // Unsat core is already in primed version and literals
+        logger.log(3, "UNSAT, check l+1 < {}: {} ", frames_.size(), (l + 1 < frames_.size()));
         if (l + 1 < frames_.size()) {
+          frames_[l + 1].push_back(out); // add not uc, here we store cubes only in frames
           // add (s, l+1) to stack
-          proof_goals.new_proof_goal(s, l+1);
+          // similar IC3 query O'[l+1] /\ !s' /\ T /\ s
+          // here we have used the unsat core
+          proof_goals.new_proof_goal(s, l+2); // no need for store the predecessor, pass (l + 1) + 1
+        }else {
+          // we need to add a new frontier
+          frame_tmp.push_back(out);
         }
       }
   }
   // check whether we have reached a fixed point
-
+  return true;
 }
 
-void IC3CAR::pick_state(IC3Formula& out)
+int IC3CAR::pick_state(IC3Formula& out, int& idx)
 {
+  if (under_frames_.size() == 1) {
+    TermVec inits;
+    solver_->push();
+    solver_->assert_formula(ts_.next(ts_.init()));
+    Result r = solver_->check_sat();
+    assert (r.is_sat());
+    //inits.push_back(ts_.init());
+    out = get_model_ic3formula();
+    solver_->pop();
+    for (Term t : out.children) {
+      inits.push_back(ts_.curr(t));
+    }
+    out = ic3formula_conjunction(inits);
+    logger.log(3, "Pick a state s: {}", out.term);
+    return 0;
+  }
+  // currently return the state in largest under approximation frame
+  size_t frame_idx = under_frames_.size() - 1;
+  std::random_device rd; // obtain a random number from hardware
+  std::mt19937 gen(rd()); // seed the generator
+  std::uniform_int_distribution<> distr(0, under_frames_[frame_idx].size() - 1); // define the range
+  int tmp_idx = distr(gen);
+  if (idx >= 0 && idx < under_frames_[frame_idx].size()) {
+    out = under_frames_[frame_idx][idx];
+    idx ++;
+  }else {
+    out = under_frames_[frame_idx][tmp_idx];
+    idx = tmp_idx;
+  }
+  
+  return frame_idx;
+}
 
+Term IC3CAR::get_frame_formula(int frame_idx)
+{
+  assert (frame_idx < frames_.size());
+  if (frame_idx == 0) {
+    return ts_.next(bad_);
+  }
+  Term cnf = solver_->make_term(true); // by default
+  for (IC3Formula& terms : frames_[frame_idx]) {
+    // all IC3Formula is a conjunction of predicates
+    IC3Formula negated_formula = ic3formula_negate(terms);
+    cnf = solver_->make_term(And, cnf, negated_formula.term);
+  }
+  logger.log(3, "over frame formula: {}", cnf);
+  return cnf;
+}
+
+bool IC3CAR::reach_fixed_point()
+{
+  if (frames_.size() <= 2) {
+    return false;
+  }
+  assert(frames_.size() > 1);
+  Term disjuncts = get_frame_formula(0);
+  disjuncts = solver_->make_term(Or, disjuncts, get_frame_formula(1));  
+  for (int i = 2; i < frames_.size(); i ++)
+  {
+    Term curr_frame = get_frame_formula(i);
+    solver_->push();
+    //solver_->assert_formula(solver_->make_term(Not, bad_label_));
+    //solver_->assert_formula(solver_->make_term(Not, trans_label_));
+    solver_->assert_formula(solver_->make_term(And, solver_->make_term(Not, disjuncts), curr_frame));
+    logger.log(3, "check !disj formula: {}", solver_->make_term(Not, disjuncts));
+    logger.log(3, "check fixedpoint formula: {}", solver_->make_term(And, solver_->make_term(Not, disjuncts), curr_frame));
+    Result r = check_sat();
+    bool reached = r.is_unsat();
+    logger.log(1, "formula unsat? {}", reached);
+    solver_->pop();
+    if (reached) {
+      return true; 
+    }
+    // continue to add formulas
+    disjuncts = solver_->make_term(Or, disjuncts, curr_frame);    
+  }
+  return false;
 }
 
 ProverResult IC3CAR::check_until(int k)
@@ -462,28 +623,52 @@ ProverResult IC3CAR::check_until(int k)
   // ever initializing base classes
   assert(initialized_);
 
-  ProverResult res;
+  logger.log(1, "Current frame size: {}", frames_.size());
+
+  // set the first to be !P
+  frames_.push_back({});
+
+  ProverResult res = step_0();
+  
+  if (res != ProverResult::UNKNOWN) {
+    return res;
+  }
+  
   RefineResult ref_res;
   int i = reached_k_ + 1; // value should be zero now
   assert(reached_k_ + 1 >= 0);
+
+  int cube_idx = 0;
   while (i <= k) {
     // 1. first pick a state from the U
-    
-    Term tmp = bad_;
-    ProofGoalQueue proof_goals;
-
+    //int level = under_frames_.size() - 1;
+  
     IC3Formula goal;
-    pick_state(goal);
+    int j = pick_state(goal, cube_idx);
 
-    int frame_level = frames_.size() - 1;
-    proof_goals.new_proof_goal(goal, frontier_idx(), nullptr);
+    // 2. O_tmp = not P
+    Term prop = smart_not(bad_); // must be a predicate?
+    std::vector<IC3Formula> frame_tmp;
+    //frame_tmp.push_back();
 
-    ProverResult res = UNKNOWN; 
+    ProofGoalQueue proof_goals;
+    //int frame_level = frames_.size() - 1;
+    // we need to have the 
+    proof_goals.new_proof_goal(goal, frames_.size(), nullptr);
 
-    if (is_blocked(proof_goals)) {
-      res = ProverResult::TRUE;
-    }else {
+    bool blocked = is_blocked(proof_goals, j, frame_tmp); 
+
+    if (! blocked) {
       res = ProverResult::FALSE;
+    }else {
+      // now we can check fixed point
+      if (reach_fixed_point()) {
+        return ProverResult::TRUE;
+      }
+      res = ProverResult::UNKNOWN;
+      // we need to push forward the over-approximate sets
+      frames_.push_back(frame_tmp);
+      logger.log(3, "added new frame[{}]: {}", (frames_.size() - 1), get_frame_formula(frames_.size() - 1));
     }
 
     if (res == ProverResult::FALSE) {

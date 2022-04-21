@@ -79,6 +79,9 @@ class IC3CAR : public IC3
   std::vector<std::vector<IC3Formula>> under_frames_;
   smt::TermVec under_frame_labels_;  ///< labels to activate under frames
 
+  // label for next bad
+  smt::Term next_bad_label_;
+
   // Since MathSAT is the best solver for IC3CAR it helps to use
   // its bool_model_generation option which doesn't enable
   // model generation for theories
@@ -145,22 +148,34 @@ class IC3CAR : public IC3
 
   ProverResult step_0();
 
+  virtual void push_frame();
+
+  void push_over_frontier();
+
   //virtual ProverResult step(int i);
 
   virtual ProverResult check_until(int k);
 
-  bool is_blocked(ProofGoalQueue& proof_goals);
+  bool is_blocked(ProofGoalQueue& proof_goals, int j
+                , std::vector<IC3Formula>& frame_tmp);
+
+
+  void add_to_under_frame(IC3Formula& t, int j );
 
   virtual bool rel_ind_check(size_t i,
                             const IC3Formula & c,
                             IC3Formula & out,
                             bool get_pred = true);
 
-  void pick_state(IC3Formula& out);
+  int pick_state(IC3Formula& out, int& idx);
 
-  void successor_generalization_and_fix(size_t i,
-                                                 const Term & c,
+  void successor_generalization_and_fix(size_t i, const smt::Term & c,
                                                  IC3Formula & pred);
+  smt::Term get_frame_formula(int frame_idx);
+
+  bool reach_fixed_point();
+
+  virtual void reconstruct_trace(const ProofGoal * pg, smt::TermVec & out);
 };
 
 }  // namespace pono

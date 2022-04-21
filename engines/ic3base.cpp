@@ -131,10 +131,15 @@ void IC3Base::initialize()
   push_frame();
   // can't use constrain_frame for initial states because not guaranteed to be
   // an IC3Formula it's handled specially
-  solver_->assert_formula(
-      solver_->make_term(Implies, frame_labels_.at(0), ts_.init()));
-  logger.log(
+  if (options_.engine_ != IC3IA_CAR) {
+        solver_->assert_formula(
+            solver_->make_term(Implies, frame_labels_.at(0), ts_.init()));
+        logger.log(
             3, "Add init formula {}", solver_->make_term(Implies, frame_labels_.at(0), ts_.init()));
+  }else {
+    init_label_ = solver_->make_symbol("__init_label", boolsort_);
+  }
+
   push_frame();
 
   // set semantics of TS labels
@@ -142,7 +147,7 @@ void IC3Base::initialize()
   assert(!trans_label_);
   assert(!bad_label_);
   // frame 0 label is identical to init label
-  init_label_ = frame_labels_[0];
+  if (options_.engine_ != IC3IA_CAR) init_label_ = frame_labels_[0];
 
   trans_label_ = solver_->make_symbol("__trans_label", boolsort_);
   solver_->assert_formula(
@@ -785,11 +790,15 @@ void IC3Base::predecessor_generalization_and_fix(size_t i,
 // Push a frame: set P as the frontier
 void IC3Base::push_frame()
 {
+  if (options_.engine_ == IC3IA_CAR) {
+    return ;
+  }
   assert(frame_labels_.size() == frames_.size());
   // pushes an empty frame
   frame_labels_.push_back(
       solver_->make_symbol("__frame_label_" + std::to_string(frames_.size()),
                            solver_->make_sort(BOOL)));
+  logger.log(3, "Should not appear in IC3CAR");
   frames_.push_back({});// for ic3, it is P, but for car it is !P
 
   if (frames_.size() > 1) {
@@ -797,7 +806,7 @@ void IC3Base::push_frame()
     // not actually adding to frames_ because might not be a valid IC3Formula
     // plus we don't need to do extra work to propagate it
     // If it engine is IC3IA_CAR, we put bad_ instead of prop
-    Term prop = (options_.engine_ == IC3IA_CAR) ? ts_.next(bad_) : smart_not(bad_);
+    Term prop = smart_not(bad_); //(options_.engine_ == IC3IA_CAR) ? ts_.next(bad_) :
     // _frame_label_ -> prop
     solver_->assert_formula(
         solver_->make_term(Implies, frame_labels_.back(), prop));
@@ -992,6 +1001,7 @@ void IC3Base::reconstruct_trace(const ProofGoal * pg, TermVec & out)
 
   out.clear();
   while (pg) {
+    logger.log(3, "cex: ", pg->target.term);
     out.push_back(pg->target.term);
     assert(ts_.only_curr(out.back()));
     pg = pg->next;
