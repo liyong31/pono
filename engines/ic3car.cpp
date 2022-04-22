@@ -10,15 +10,7 @@
 ** directory for licensing information.\endverbatim
 **
 ** \brief CAR via Implicit Predicate Abstraction (IC3IA) implementation
-**        based on
-**
-**        IC3 Modulo Theories via Implicit Predicate Abstraction
-**            -- Alessandro Cimatti, Alberto Griggio,
-**               Sergio Mover, Stefano Tonetta
-**
-**        and the open source implementation:
-**
-**        https://es-static.fbk.eu/people/griggio/ic3ia/index.html
+**        based on IC3IA
 **
 **  within Pono, we are building on the bit-level IC3 instead of directly
 **  on IC3Base, because a lot of the functionality is the same
@@ -145,7 +137,7 @@ void IC3CAR::push_under_frame()
   // under_frame_labels_.push_back(solver_->make_symbol(
       // "__under_frame_label_" + std::to_string(under_frames_.size()),
       // solver_->make_sort(BOOL)));
-  under_frames_.push_back({});  // by default, the frame_ is empty
+  under_frames_.push_back({});  // by default, the frame_ is empty, which means contains only I
 }
 
 void IC3CAR::push_over_frontier()
@@ -318,6 +310,24 @@ void IC3CAR::successor_generalization_and_fix(size_t i,
   assert(!pred.disjunction);  // expecting a conjunction
 }
 
+void IC3CAR::abstract_cube(const IC3Formula& cube, smt::Term& out)
+{
+  Term lbl;
+  Term lits = solver_->make_term(true);
+  for (const auto & cc : cube.children) {
+      lbl = label(cc);
+      if (lbl != cc && !is_global_label(lbl)) {
+        // only need to add assertion if the label is not the same as ccnext
+        // could be the same if ccnext is already a literal
+        // and is not already in a global assumption
+        lits = solver_->make_term(And, lits, solver_->make_term(Implies, lbl, cc));
+      }
+    lits = solver_->make_term(And, lits, lbl);
+    logger.log(3, "add new lbl to abstract cube: {}, {}", lbl, cc);
+  }
+  out = lits;
+}
+
 bool IC3CAR::rel_ind_check(size_t i,
                            const IC3Formula & s,
                            IC3Formula & out,
@@ -459,7 +469,32 @@ void IC3CAR::add_to_under_frame(IC3Formula & t, int j)
   under_frames_[j].push_back(t);
 }
 
-void IC3CAR::construct_trace(const ProofGoal * pg, TermVec & out, int j)
+// we assume that curr and succ are already cubes in boolean variables
+bool IC3CAR::is_connected(const smt::Term& curr, const smt::Term& succ)
+{
+  push_solver_context();
+
+  solver_->assert_formula(curr);
+  solver_->assert_formula(ts_.next(succ));
+  // add Trans
+  assert_trans_label();
+
+  Result r = check_sat();
+
+  if (r.is_unsat()) {
+    logger.log(1, "state {} cannot reach state {}", curr, succ);
+    return false;
+  }else if (r.is_unknown()) {
+    logger.log(1, "unknown: state {} reach state {}", curr, succ);
+    return false;
+  }
+  pop_solver_context();
+  return true;
+}
+
+//Include all CEXes? or just one
+void IC3CAR::construct_trace(const ProofGoal * pg, TermVec & out
+                              , const UnorderedTermLevelMap& term2level)
 {
   assert(!solver_context_);
   assert(pg);
@@ -469,24 +504,47 @@ void IC3CAR::construct_trace(const ProofGoal * pg, TermVec & out, int j)
   out.clear();
 
   // out.push_back(bad_); //we need to
+  // Term next;
+  Term key;
   while (pg) {
+    key = pg->target.term;
+    // abstract_cube(pg->target, next);
     logger.log(3, "cex: {}, {}", pg->target.term, pg->idx);
     out.push_back(pg->target.term);
     assert(ts_.only_curr(out.back()));
     pg = pg->next;
-    j--;
+    // if (pg){
+    //   // check the connection
+    //   Term curr; 
+    //   abstract_cube(pg->target, curr);
+    //   if (! is_connected(curr, next)) {
+    //     logger.log(3, "abstract connection failed: {} -> {}", curr, next);
+    //   }
+    // }
   }
+  // INVARIANT: the last state in queue is in U[j]
   // add the initial state? or we need track U-sequence
   // current one is in U[j]
-
+  int j = term2level.at(key);
   logger.log(3, "current under_frame at {}", j);
-
+  j --; // backtrack to U[j-1]
   if (j >= 0) {
     while (j > 0) {
+      // Term curr;
       Term curr_frame = solver_->make_term(false);
+      // bool connected = false;
       for (IC3Formula & c : under_frames_[j]) {
         curr_frame = solver_->make_term(Or, curr_frame, c.term);
+        // abstract_cube(c, curr);
+        // connected = connected || is_connected(curr, next);
+        // if (connected) {
+        //   next = curr;
+        //   break;
+        // }
       }
+      // if (! connected) {
+      //   logger.log(3, "abstract connection failed: {} -> {}", curr, next);
+      // }
       logger.log(3, "current under_frame U[{}] = {}", j, curr_frame);
       out.push_back(curr_frame);
       j--;
@@ -519,14 +577,21 @@ bool IC3CAR::is_cex_valid(smt::TermVec & out)
     return false;
   }
   pop_solver_context();
+
+  // now check the connection in the abstract system
+
   return true;
 }
-
+// In is_blocked, we will prove proof_goals can not reach bad states
+// s \in U[j] and j will not change
 bool IC3CAR::is_blocked(ProofGoalQueue & proof_goals,
                         int j,
                         std::vector<IC3Formula> & frame_tmp)
 {
-  logger.log(3, "current s is from U[{}]", j);
+  UnorderedTermLevelMap term2level;
+  // record the first term
+  term2level.emplace(proof_goals.top()->target.term, j);
+  logger.log(3, "is_blocked: current s is from U[{}]", j);
   while (!proof_goals.empty()) {
     const ProofGoal * pg = proof_goals.top();
     IC3Formula s = pg->target;
@@ -538,7 +603,7 @@ bool IC3CAR::is_blocked(ProofGoalQueue & proof_goals,
     // 1. check whether it has been traced back to initial
     if (pg->idx <= 0) {
       // went all the way back to bad, we need to trace back to initial
-      construct_trace(pg, cex_, j);
+      construct_trace(pg, cex_, term2level);
       // since the first cex is at bad
       if (!is_cex_valid(cex_)) {
         logger.log(1, "Counterexample is wrong");
@@ -549,7 +614,6 @@ bool IC3CAR::is_blocked(ProofGoalQueue & proof_goals,
       // TODO might have to change this if there's an algorithm
       // that refines but can keep proof goals around
       proof_goals.clear();
-
       return false;
     }
 
@@ -563,7 +627,7 @@ bool IC3CAR::is_blocked(ProofGoalQueue & proof_goals,
       }
       IC3Formula t = ic3formula_conjunction(conjuncts);
       add_to_under_frame(t, j + 1);  // add to U[j + 1]
-      j++;
+      term2level.emplace(t.term, j+1);
       // Extending U
       // stack.push(t, l-1)
       logger.log(3, "add new proof goal: ({}, {})", t.term, (((int)l) - 1));
@@ -769,6 +833,7 @@ ProverResult IC3CAR::check_until(int k)
       RefineResult s = refine();
       if (s == REFINE_SUCCESS) {
         // we need to clear the under frames
+        // only over frames can be kept
         under_frames_.clear();
         push_under_frame(); // set the U[0] = I
         continue;

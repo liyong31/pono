@@ -35,6 +35,8 @@
 
 namespace pono {
 
+using UnorderedTermLevelMap = std::unordered_map<smt::Term, int>;
+
 class IC3CAR : public IC3
 {
  public:
@@ -77,7 +79,7 @@ class IC3CAR : public IC3
   ///< a vector of the given Unit template
   ///< which changes depending on the implementation
   std::vector<std::vector<IC3Formula>> under_frames_;
-  smt::TermVec under_frame_labels_;  ///< labels to activate under frames
+//   smt::TermVec under_frame_labels_;  ///< labels to activate under frames
 
   // label for next bad
   smt::Term next_bad_label_;
@@ -175,12 +177,19 @@ class IC3CAR : public IC3
 
   bool reach_fixed_point();
 
-  void construct_trace(const ProofGoal * pg, smt::TermVec & out, int j);
+  void construct_trace(const ProofGoal * pg, smt::TermVec & out, const UnorderedTermLevelMap& term2level);
 
   // last overlaps with bad and fist with initial
   bool is_cex_valid(smt::TermVec & out);
 
   virtual ProverResult step(int i);
+
+  bool is_connected(const smt::Term& curr, const smt::Term& succ);
+
+  void abstract_cube(const IC3Formula& cube, smt::Term& out);
+
+
+  
 
 };
 
