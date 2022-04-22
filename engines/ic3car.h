@@ -175,7 +175,13 @@ class IC3CAR : public IC3
 
   bool reach_fixed_point();
 
-  virtual void reconstruct_trace(const ProofGoal * pg, smt::TermVec & out);
+  void construct_trace(const ProofGoal * pg, smt::TermVec & out, int j);
+
+  // last overlaps with bad and fist with initial
+  bool is_cex_valid(smt::TermVec & out);
+
+  virtual ProverResult step(int i);
+
 };
 
 }  // namespace pono

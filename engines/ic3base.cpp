@@ -1001,7 +1001,7 @@ void IC3Base::reconstruct_trace(const ProofGoal * pg, TermVec & out)
 
   out.clear();
   while (pg) {
-    logger.log(3, "cex: ", pg->target.term);
+    logger.log(3, "cex: {}", pg->target.term);
     out.push_back(pg->target.term);
     assert(ts_.only_curr(out.back()));
     pg = pg->next;
