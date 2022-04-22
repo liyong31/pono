@@ -35,7 +35,7 @@
 
 namespace pono {
 
-using UnorderedTermLevelMap = std::unordered_map<smt::Term, int>;
+using UnorderedTermLevelMap = std::unordered_map<smt::Term, std::pair<smt::Term, int>>;
 
 class IC3CAR : public IC3
 {
@@ -99,6 +99,7 @@ class IC3CAR : public IC3
                                     ///< do automatic top-level propagation
                                     ///< which means you can't count on a symbol
                                     ///< staying a symbol
+  UnorderedTermLevelMap term2level_;
 
   /** Overriding the method. This will return the concrete_ts_ because ts_ is an
    *  abstraction of concrete_ts_.

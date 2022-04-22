@@ -155,9 +155,11 @@ void IC3Base::initialize()
   logger.log(
             3, "Add trans formula {}", solver_->make_term(Implies, trans_label_, ts_.trans()));
   bad_label_ = solver_->make_symbol("__bad_label", boolsort_);
-  solver_->assert_formula(solver_->make_term(Implies, bad_label_, bad_));
-  logger.log(
+  if (options_.engine_ != IC3IA_CAR) {
+    solver_->assert_formula(solver_->make_term(Implies, bad_label_, bad_));
+    logger.log(
             3, "Add bad formula {}", solver_->make_term(Implies, bad_label_, bad_));
+  }
 }
 
 ProverResult IC3Base::check_until(int k)

@@ -347,13 +347,13 @@ bool IC3CAR::rel_ind_check(size_t i,
   {
     // solver_->assert_formula(next_bad_label_); // add next bad
     //  we now obtain the O'_l
-    solver_->assert_formula(get_frame_formula(i));
+    Term o = get_frame_formula(i);
+    solver_->assert_formula(o);
+    logger.log(1, "assert O'[l]: {}", o);
   }
-  // add s
-  solver_->assert_formula(s.term);
   // add Trans
   assert_trans_label();
-  logger.log(1, "assert trans label");
+  logger.log(1, "assert trans label: {}", ts_.trans());
   // solver_->assert_formula(ts_.trans());
   // use assumptions for c' so we can get cheap initial
   // generalization if the check is unsat
@@ -396,6 +396,7 @@ bool IC3CAR::rel_ind_check(size_t i,
   } else {
     assert(r.is_unsat());  // not expecting to get unknown
     logger.log(3, "unsat and obtain core: {}", r.is_unsat());
+    // solver_->dump_smt2("file.smt2");
     // Use unsat core to get cheap generalization
     // TODO Obtain minimal unsat core
     UnorderedTermSet core;
@@ -482,10 +483,10 @@ bool IC3CAR::is_connected(const smt::Term& curr, const smt::Term& succ)
   Result r = check_sat();
 
   if (r.is_unsat()) {
-    logger.log(1, "state {} cannot reach state {}", curr, succ);
+    logger.log(1, "state {} cannot reach state {}", curr, ts_.next(succ));
     return false;
   }else if (r.is_unknown()) {
-    logger.log(1, "unknown: state {} reach state {}", curr, succ);
+    logger.log(1, "unknown: state {} reach state {}", curr, ts_.next(succ));
     return false;
   }
   pop_solver_context();
@@ -504,54 +505,69 @@ void IC3CAR::construct_trace(const ProofGoal * pg, TermVec & out
   out.clear();
 
   // out.push_back(bad_); //we need to
-  // Term next;
-  Term key;
-  while (pg) {
-    key = pg->target.term;
-    // abstract_cube(pg->target, next);
-    logger.log(3, "cex: {}, {}", pg->target.term, pg->idx);
-    out.push_back(pg->target.term);
-    assert(ts_.only_curr(out.back()));
-    pg = pg->next;
-    // if (pg){
-    //   // check the connection
-    //   Term curr; 
-    //   abstract_cube(pg->target, curr);
-    //   if (! is_connected(curr, next)) {
-    //     logger.log(3, "abstract connection failed: {} -> {}", curr, next);
-    //   }
-    // }
-  }
-  // INVARIANT: the last state in queue is in U[j]
-  // add the initial state? or we need track U-sequence
-  // current one is in U[j]
-  int j = term2level.at(key);
-  logger.log(3, "current under_frame at {}", j);
-  j --; // backtrack to U[j-1]
-  if (j >= 0) {
-    while (j > 0) {
-      // Term curr;
-      Term curr_frame = solver_->make_term(false);
-      // bool connected = false;
-      for (IC3Formula & c : under_frames_[j]) {
-        curr_frame = solver_->make_term(Or, curr_frame, c.term);
-        // abstract_cube(c, curr);
-        // connected = connected || is_connected(curr, next);
-        // if (connected) {
-        //   next = curr;
-        //   break;
-        // }
-      }
-      // if (! connected) {
-      //   logger.log(3, "abstract connection failed: {} -> {}", curr, next);
-      // }
-      logger.log(3, "current under_frame U[{}] = {}", j, curr_frame);
-      out.push_back(curr_frame);
-      j--;
+  Term next;
+  Term curr = pg->target.term;
+  out.push_back(pg->target.term);
+  // while (pg) {
+  //   curr = pg->target.term;
+  //   abstract_cube(pg->target, next);
+  //   logger.log(3, "cex: {}, {}", pg->target.term, pg->idx);
+  //   out.push_back(pg->target.term);
+  //   assert(ts_.only_curr(out.back()));
+  //   pg = pg->next;
+  //   if (pg){
+  //     // check the connection
+  //     Term curr; 
+  //     abstract_cube(pg->target, curr);
+  //     if (! is_connected(curr, next)) {
+  //       logger.log(3, "abstract connection failed: {} -> {}", curr, next);
+  //     }
+  //     next = curr;
+  //   }
+  // }
+  while (true) {
+    // INVARIANT: we trace back to current key
+    pair<Term, int> pair = term2level_.at(curr);
+    int j = pair.second;
+    logger.log(3, "current under_frame at {}", pair.second);
+    if (j < 0) {
+      break;
     }
-    logger.log(3, "init under frame U[0] = {}", under_frames_[0].size());
-    out.push_back(ts_.init());
+    Term prev = pair.first;
+    out.push_back(prev);
+    curr = prev;
+    //abstract_cube(c, curr);
+    //    connected = connected || is_connected(curr, next);
+    //    if (connected) {
+    //      next = curr;
+    //      break;
+    //    }
   }
+  // if (j >= 0) {
+
+  //   while (j > 0) {
+  //     Term curr;
+  //     Term curr_frame = solver_->make_term(false);
+  //     bool connected = false;
+  //     for (IC3Formula & c : under_frames_[j]) {
+  //       curr_frame = solver_->make_term(Or, curr_frame, c.term);
+  //       abstract_cube(c, curr);
+  //       connected = connected || is_connected(curr, next);
+  //       if (connected) {
+  //         next = curr;
+  //         break;
+  //       }
+  //     }
+  //     if (! connected) {
+  //       logger.log(3, "abstract connection failed: {} -> {}", curr, next);
+  //     }
+  //     logger.log(3, "current under_frame U[{}] = {}", j, curr_frame);
+  //     out.push_back(curr_frame);
+  //     j--;
+  //   }
+  //   logger.log(3, "init under frame U[0] = {}", under_frames_[0].size());
+  //   out.push_back(ts_.init());
+  // }
 
   std::reverse(out.begin(), out.end());
 }
@@ -569,7 +585,7 @@ bool IC3CAR::is_cex_valid(smt::TermVec & out)
   }
   pop_solver_context();
   push_solver_context();
-  solver_->assert_formula(bad_label_);
+  solver_->assert_formula(bad_);
   solver_->assert_formula(out.back());
   r = check_sat();
   if (r.is_unsat()) {
@@ -590,7 +606,7 @@ bool IC3CAR::is_blocked(ProofGoalQueue & proof_goals,
 {
   UnorderedTermLevelMap term2level;
   // record the first term
-  term2level.emplace(proof_goals.top()->target.term, j);
+  //term2level.emplace(proof_goals.top()->target.term, j);
   logger.log(3, "is_blocked: current s is from U[{}]", j);
   while (!proof_goals.empty()) {
     const ProofGoal * pg = proof_goals.top();
@@ -627,7 +643,7 @@ bool IC3CAR::is_blocked(ProofGoalQueue & proof_goals,
       }
       IC3Formula t = ic3formula_conjunction(conjuncts);
       add_to_under_frame(t, j + 1);  // add to U[j + 1]
-      term2level.emplace(t.term, j+1);
+      term2level_.emplace(t.term, std::make_pair(pg->target.term, j));
       // Extending U
       // stack.push(t, l-1)
       logger.log(3, "add new proof goal: ({}, {})", t.term, (((int)l) - 1));
@@ -663,7 +679,7 @@ bool IC3CAR::is_blocked(ProofGoalQueue & proof_goals,
 
 int IC3CAR::pick_state(IC3Formula & out, int & idx)
 {
-  if (under_frames_.size() == 1) {
+  if (under_frames_.size() <= 1) {
     TermVec inits;
     solver_->push();
     solver_->assert_formula(ts_.next(ts_.init()));
@@ -774,6 +790,14 @@ ProverResult IC3CAR::step(int i)
   IC3Formula goal;
   int j = pick_state(goal, cube_idx);
 
+  if (j == 0) {
+    // if it is not inserted successfully, then it must exist
+    term2level_.emplace(goal.term, std::make_pair(solver_->make_term(false), -1));
+  }else {
+    // this term should exists 
+    assert (term2level_.find(goal.term) != term2level_.end());
+  }
+
   // 2. O_tmp = not P
   // Term prop = smart_not(bad_);  // must be a predicate?
   std::vector<IC3Formula> frame_tmp; // initially it is true
@@ -836,6 +860,7 @@ ProverResult IC3CAR::check_until(int k)
         // only over frames can be kept
         under_frames_.clear();
         push_under_frame(); // set the U[0] = I
+        term2level_.clear();
         continue;
       } else if (s == REFINE_NONE) {
         // this is a real counterexample
@@ -1007,7 +1032,34 @@ RefineResult IC3CAR::refine()
 
 void IC3CAR::reset_solver()
 {
-  super::reset_solver();
+  // rewrite reset solver
+  assert(solver_context_ == 0);
+
+  if (failed_to_reset_solver_) {
+    // don't even bother trying
+    // this solver doesn't support reset_assertions
+    return;
+  }
+
+  try {
+    solver_->reset_assertions();
+
+    // Now need to add back in constraints at context level 0
+    logger.log(2, "IC3CAR: Reset solver and now re-adding constraints.");
+
+    solver_->assert_formula(
+        solver_->make_term(Implies, trans_label_, ts_.trans()));
+
+    // solver_->assert_formula(solver_->make_term(Implies, bad_label_, bad_));
+  }
+  catch (SmtException & e) {
+    logger.log(1,
+               "Failed to reset solver (underlying solver must not support "
+               "it). Disabling solver resets for rest of run.");
+    failed_to_reset_solver_ = true;
+  }
+
+  num_check_sat_since_reset_ = 0;
 
   for (const auto & elem : lbl2pred_) {
     solver_->assert_formula(solver_->make_term(Equal, elem.first, elem.second));
