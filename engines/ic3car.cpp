@@ -744,7 +744,7 @@ bool IC3CAR::is_valid_invariants()
   solver_->assert_formula(invar_); // invar
   assert_trans_label(); // T
   solver_->assert_formula(solver_->make_term(Not,ts_.next(invar_))); // not invar'
-  solver_->assert_formula(solver_->make_term(Not, ts_.next(bad_))); // P'
+  // solver_->assert_formula(solver_->make_term(Not, ts_.next(bad_))); // P'
   bool is_valid = check_sat().is_unsat();
   pop_solver_context();
   return is_valid;
