@@ -37,6 +37,8 @@ namespace pono {
 
 using UnorderedTermLevelMap = std::unordered_map<smt::Term, std::pair<smt::Term, int>>;
 
+using TermPair = std::pair<smt::Term, smt::Term>;
+
 class IC3CAR : public IC3
 {
  public:
@@ -162,6 +164,7 @@ class IC3CAR : public IC3
   bool is_blocked(ProofGoalQueue& proof_goals, int j
                 , std::vector<IC3Formula>& frame_tmp);
 
+  virtual bool propagate(size_t i);
 
   void add_to_under_frame(IC3Formula& t, int j );
 
@@ -189,8 +192,9 @@ class IC3CAR : public IC3
 
   void abstract_cube(const IC3Formula& cube, smt::Term& out);
 
+  bool extend_predicate(const smt::Term& pred, TermPair& out);
 
-  
+  void extend_predicate(smt::UnorderedTermSet& out);
 
 };
 

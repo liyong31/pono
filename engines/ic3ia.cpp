@@ -232,6 +232,7 @@ void IC3IA::abstract()
 // refine the abstraction by cex
 RefineResult IC3IA::refine()
 {
+  logger.log(1, "Performing cex refinement");
   // counterexample trace should have been populated
   assert(cex_.size());
   if (cex_.size() == 1) {
