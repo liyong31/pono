@@ -737,6 +737,19 @@ Term IC3CAR::get_frame_formula(int frame_idx)
   return cnf;
 }
 
+bool IC3CAR::is_valid_invariants()
+{
+  push_solver_context();
+  solver_->assert_formula(solver_->make_term(Not, bad_)); // P
+  solver_->assert_formula(invar_); // invar
+  assert_trans_label(); // T
+  solver_->assert_formula(solver_->make_term(Not,ts_.next(invar_))); // not invar'
+  solver_->assert_formula(solver_->make_term(Not, ts_.next(bad_))); // P'
+  bool is_valid = check_sat().is_unsat();
+  pop_solver_context();
+  return is_valid;
+}
+
 bool IC3CAR::reach_fixed_point()
 {
   if (frames_.size() <= 2) {
@@ -764,65 +777,14 @@ bool IC3CAR::reach_fixed_point()
     logger.log(2, "Fxied point formula reached? {}", reached);
     solver_->pop();
     if (reached) {
-      invar_ = ts_.curr(disjuncts);
-      // solver_->push();
-      // Term invar = ts_.curr(disjuncts);
-      // solver_->assert_formula(solver_->make_term(Not, invar));
-      // Term not_init = solver_->make_term(Not, ts_.init());
-      // solver_->assert_formula(not_init);
-      // solver_->assert_formula(ts_.next(not_init));
-      // solver_->assert_formula(disjuncts);
-      // assert_trans_label();
-      // reached = check_sat().is_unsat();
-      // logger.log(2, "Fixed point verified: {}", reached);
-      // solver_->pop();
+      invar_ = solver_->make_term(Not, ts_.curr(disjuncts));
+      logger.log(2, "is valid invariant ? {}", is_valid_invariants());
       return true;
     }
     // continue to add formulas
     disjuncts = solver_->make_term(Or, disjuncts, curr_frame);
   }
   return false;
-}
-
-// propogate clauses to see if there is invariant
-bool IC3CAR::propagate(size_t i)
-{
-  assert(!solver_context_);
-  assert(i < frontier_idx());
-
-  vector<IC3Formula> & Fi = frames_.at(i);
-
-  size_t k = 0;
-  IC3Formula gen;
-  for (size_t j = 0; j < Fi.size(); ++j) {
-    const IC3Formula & c = Fi.at(j);
-    assert(!c.disjunction);
-    assert(c.term);
-    assert(c.children.size());
-    // make it to current version
-    TermVec vc;
-    for (const auto& lit : c.children) {
-      vc.push_back(ts_.curr(lit));
-    }
-    IC3Formula cb = ic3formula_conjunction(vc);
-    // NOTE: rel_ind_check works on conjunctions
-    //       need to negate
-    if (rel_ind_check(i, ic3formula_negate(cb), gen, false)) {
-      // can push to next frame
-      // got unsat-core based generalization
-      assert(gen.term);
-      assert(gen.children.size());
-      constrain_frame(i + 1, ic3formula_negate(gen), false);
-    } else {
-      // have to keep this one at this frame
-      Fi[k++] = c;
-    }
-  }
-
-  // get rid of garbage at end of frame
-  Fi.resize(k);
-
-  return Fi.empty();
 }
 
 // backward CAR: either return a counterexample or conclude the abstract system
@@ -885,17 +847,6 @@ ProverResult IC3CAR::step(int i)
                "added new frame[{}]: {}",
                (frames_.size() - 1),
                get_frame_formula(frames_.size() - 1));
-    //must make sure the frames are monotone 
-    // for (size_t j = 1; j < frontier_idx(); ++j) {
-    //   if (propagate(j)) {
-    //     assert(j + 1 < frames_.size());
-    //     // save the invariant
-    //     // which is the frame that just had all terms
-    //     // from the previous frames propagated
-    //     invar_ = get_frame_term(j + 1);
-    //     return ProverResult::TRUE;
-    //   }
-    // }
   }
 
   reset_solver();
@@ -935,7 +886,7 @@ ProverResult IC3CAR::check_until(int k)
         push_under_frame();  // set the U[0] = I
         term2level_.clear();
         // seems that msat favours reset
-        // frames_.clear(); // frames are not monotone, has to be reset
+        // frames_.clear(); 
         // push_over_frontier();
         continue;
       } else if (s == REFINE_NONE) {
