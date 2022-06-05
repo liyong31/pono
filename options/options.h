@@ -30,6 +30,7 @@ enum Engine
 {
   NONE = -1,
   BMC = 0,
+  FBMC,
   BMC_SP,
   KIND,
   INTERP,
@@ -40,7 +41,8 @@ enum Engine
   MSAT_IC3IA,
   IC3SA_ENGINE,
   SYGUS_PDR,
-  IC3IA_CAR
+  IC3IA_CAR,
+  IC3SA_CAR
   // NOTE: if adding an IC3 variant,
   // make sure to update ic3_variants_set in options/options.cpp
   // used for setting solver options appropriately
@@ -107,6 +109,7 @@ class PonoOptions
         mbic3_indgen_mode(default_mbic3_indgen_mode),
         ic3_functional_preimage_(default_ic3_functional_preimage_),
         ic3_unsatcore_gen_(default_ic3_unsatcore_gen_),
+        ia_more_preds_(default_ia_more_preds_),
         ic3ia_reduce_preds_(default_ic3ia_reduce_preds_),
         ic3ia_track_important_vars_(default_ic3ia_track_important_vars_),
         ic3sa_func_refine_(default_ic3sa_func_refine_),
@@ -185,6 +188,7 @@ class PonoOptions
   bool ic3_functional_preimage_; ///< functional preimage in IC3
   bool ic3_unsatcore_gen_;  ///< generalize a cube during relative inductiveness
                             ///< check with unsatcore
+  bool ia_more_preds_;  ///< add as many predicates as possible for predicate abstraction
   bool ic3ia_reduce_preds_;  ///< reduce predicates with unsatcore in IC3IA
   bool ic3ia_track_important_vars_;  ///< prioritize predicates with marked
                                      ///< important variables
@@ -247,6 +251,7 @@ class PonoOptions
   static const unsigned int default_mbic3_indgen_mode = 0;
   static const bool default_ic3_functional_preimage_ = false;
   static const bool default_ic3_unsatcore_gen_ = true;
+  static const bool default_ia_more_preds_ = false;
   static const bool default_ic3ia_reduce_preds_ = true;
   static const bool default_ic3ia_track_important_vars_ = true;
   static const bool default_ic3sa_func_refine_ = true;

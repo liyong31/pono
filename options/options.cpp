@@ -49,6 +49,7 @@ enum optionIndex
   NO_IC3_INDGEN,
   IC3_GEN_MAX_ITER,
   IC3_FUNCTIONAL_PREIMAGE,
+  IA_MORE_PREDS,
   NO_IC3_UNSATCORE_GEN,
   NO_IC3IA_REDUCE_PREDS,
   NO_IC3IA_TRACK_IMPORTANT_VARS,
@@ -289,6 +290,12 @@ const option::Descriptor usage[] = {
     Arg::None,
     "  --no-ic3sa-func-refine \tDisable functional unrolling attempt "
     " in IC3SA." },
+  { IA_MORE_PREDS,
+    0,
+    "",
+    "ia-more-preds",
+    Arg::None,
+    "  --ia-more-preds \tObtain as many predicates as possible." },
   { MBIC3_INDGEN_MODE,
     0,
     "",
@@ -539,6 +546,7 @@ ProverResult PonoOptions::parse_and_set_options(int argc,
         case RESET: reset_name_ = opt.arg; break;
         case RESET_BND: reset_bnd_ = atoi(opt.arg); break;
         case CLK: clock_name_ = opt.arg; break;
+        case IA_MORE_PREDS: ia_more_preds_ = true; break;
         case NO_IC3_PREGEN: ic3_pregen_ = false; break;
         case NO_IC3_INDGEN: ic3_indgen_ = false; break;
         case IC3_GEN_MAX_ITER: ic3_gen_max_iter_ = atoi(opt.arg); break;
