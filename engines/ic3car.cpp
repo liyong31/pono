@@ -26,6 +26,8 @@
 #include "smt/available_solvers.h"
 #include "utils/logger.h"
 #include "utils/term_analysis.h"
+#include "core/functional_unroller.h"
+
 
 using namespace smt;
 using namespace std;
@@ -70,22 +72,23 @@ void IC3CAR::add_important_var(Term v)
 
 // pure virtual method implementations
 
-IC3Formula IC3CAR::get_model_ic3formula() const
+IC3Formula IC3CAR::get_model_ic3formula(bool next) const
 {
   TermVec conjuncts;
   conjuncts.reserve(predlbls_.size());
   Term val;
   for (const auto & p : predlbls_) {
-    Term nextp = lbl2nlbl_.at(p);  // current to next
-    if ((val = solver_->get_value(nextp)) == solver_true_) {
-      conjuncts.push_back(nlbl2npred_.at(nextp));
+    Term lbl = next ? lbl2nlbl_.at(p) : p;  // current to next
+    Term pred = next ? nlbl2npred_.at(lbl) : lbl2pred_.at(lbl);
+    if ((val = solver_->get_value(lbl)) == solver_true_) {
+      conjuncts.push_back(pred);
       logger.log(
-          3, "get_model_ic3formula model npred: {}", nlbl2npred_.at(nextp));
+          3, "get_model_ic3formula model npred: {}", pred);
     } else {
-      conjuncts.push_back(solver_->make_term(Not, nlbl2npred_.at(nextp)));
+      conjuncts.push_back(solver_->make_term(Not, pred));
       logger.log(3,
                  "get_model_ic3formula model npred: {}",
-                 solver_->make_term(Not, nlbl2npred_.at(nextp)));
+                 solver_->make_term(Not, pred));
     }
     assert(val->is_value());
   }
@@ -130,15 +133,11 @@ void IC3CAR::check_ts() const
   // exception better than maintaining in two places
 }
 
-void IC3CAR::push_under_frame()
+void IC3CAR::reset_under_frame()
 {
-  // assert(under_frame_labels_.size() == under_frames_.size());
-  // pushes an empty frame
-  // under_frame_labels_.push_back(solver_->make_symbol(
-  // "__under_frame_label_" + std::to_string(under_frames_.size()),
-  // solver_->make_sort(BOOL)));
-  under_frames_.push_back(
-      {});  // by default, the frame_ is empty, which means contains only I
+  under_frames_.clear();
+  under_terms_.clear();
+  // under_states_ = solver_->make_term(false);
 }
 
 void IC3CAR::push_over_frontier()
@@ -163,7 +162,7 @@ void IC3CAR::initialize()
   // call IC3Base::initialize()
   super::initialize();  // create boolsort and true iterm, abstract() ts
   // push_over_frontier(); // add bad
-  push_under_frame();
+  reset_under_frame();
 
   // add all the predicates from init and property to the abstraction
   // NOTE: abstract is called automatically in IC3Base initialize
@@ -255,16 +254,20 @@ ProverResult IC3CAR::step_0()
   push_solver_context();  // create a context for this solving procedure
   //  solver_->assert_formula(init_label_);
   // logger.log(3, "push init: {}", init_label_);
+  solver_->assert_formula(ts_.init());
   assert_trans_label();
   logger.log(3, "push trans: {}", trans_label_);
   solver_->assert_formula(ts_.next(bad_));
   logger.log(3, "push next bad: {}", ts_.next(bad_));
-  // end of T /\ bad'
+  // end of I /\ T /\ bad'
 
   ProverResult pres = ProverResult::UNKNOWN;
   r = check_sat();
-  if (r.is_unsat()) {
-    pres = ProverResult::TRUE;
+  if (r.is_sat()) {
+    cex_.clear();
+    cex_.push_back(ts_.init());
+    cex_.push_back(bad_);
+    pres = ProverResult::FALSE;
   }
   pop_solver_context();
 
@@ -296,11 +299,23 @@ void IC3CAR::successor_generalization_and_fix(size_t i,
   TermVec pred_children = pred.children;
   UnorderedTermSet reduced_pred_children(pred_children.begin(),
                                          pred_children.end());
-  for (const auto & cc : orig_pred_children) {
-    if (reduced_pred_children.find(cc) == reduced_pred_children.end()) {
-      dropped.push_back(cc);
-    }
-  }
+  // for (const auto& cc : pred_children) {
+  //   // try to drop cc
+  //   UnorderedTermSet tmp_children = reduced_pred_children; // copy
+  //   tmp_children.erase(cc);
+  //   TermVec tmp_vec(tmp_children.begin(), tmp_children.end());
+  //   solver_->push();
+  //   solver_->assert_formula(make_and(tmp_vec)); // t'
+  //   assert_trans_label(); // T
+  //   solver_->assert_formula(c); // s
+  //   Result r = solver_->check_sat();
+  //   if (r.is_sat()) {
+  //     reduced_pred_children = tmp_children; // drop the predicate
+  //     logger.log(2, "dropped predicate for t': {}", cc);
+  //   }
+  //   solver_->pop();
+  // }
+
   // if predecessor generalization is approximate
   // need to make sure it does not intersect with F[i-2]
   // Term formula = frame_labels_[i]; // redudant
@@ -335,6 +350,24 @@ void IC3CAR::abstract_cube(const IC3Formula & cube, smt::Term & out)
   out = lits;
 }
 
+void IC3CAR::fix_if_intersects_bad(TermVec & to_keep
+                                  , const TermVec & rem)
+{
+  
+  if (rem.size() != 0) {
+    // formula should be unsatisfiable (to_keep is reachable from init)
+    Term formula = solver_->make_term(And, bad_, make_and(to_keep));
+
+    bool success = reducer_.reduce_assump_unsatcore(formula,
+                                                    rem,
+                                                    to_keep,
+                                                    NULL,
+                                                    options_.ic3_gen_max_iter_,
+                                                    options_.random_seed_);
+    assert(success);
+  }
+}
+
 bool IC3CAR::rel_ind_check(size_t i,
                            const IC3Formula & s,
                            IC3Formula & out,
@@ -360,6 +393,8 @@ bool IC3CAR::rel_ind_check(size_t i,
   }
   // add Trans
   assert_trans_label();
+  // IC3Formula negated = ic3formula_negate(s);
+  // solver_->assert_formula(negated.term);
   logger.log(3, "assert trans label: {}", ts_.trans());
   // solver_->assert_formula(ts_.trans());
   // use assumptions for c' so we can get cheap initial
@@ -374,15 +409,16 @@ bool IC3CAR::rel_ind_check(size_t i,
     logger.log(3, "current s is : {}", s.term);
     Term lbl;
     for (const auto & cc : s.children) {
-      lbl = label(cc);
+      auto pred = ts_.curr(cc); // make sure it is current predicate
+      lbl = label(pred);
       if (lbl != cc && !is_global_label(lbl)) {
         // only need to add assertion if the label is not the same as ccnext
         // could be the same if ccnext is already a literal
         // and is not already in a global assumption
-        solver_->assert_formula(solver_->make_term(Implies, lbl, cc));
+        solver_->assert_formula(solver_->make_term(Implies, lbl, pred));
       }
       assumps_.push_back(lbl);
-      logger.log(3, "add new lbl to assumps: {}, {}", lbl, cc);
+      logger.log(3, "add new lbl to assumps: {}, {}", lbl, pred);
     }
   }
   logger.log(2, "Check s /\\ T /\\ O'[{}]", i);
@@ -428,7 +464,7 @@ bool IC3CAR::rel_ind_check(size_t i,
     }
 
     // DO WE NEED THIS?
-    // fix_if_intersects_initial(gen, rem);
+    // fix_if_intersects_bad(gen, rem);
     assert(gen.size() >= core.size());
     TermVec ngen;
     for (Term c : gen) {
@@ -466,15 +502,15 @@ bool IC3CAR::rel_ind_check(size_t i,
   return r.is_sat();
 }
 
-void IC3CAR::add_to_under_frame(IC3Formula & t, int j)
+void IC3CAR::add_to_under_frame(IC3Formula & t)
 {
   // j must exists
-  assert(j - 1 < under_frames_.size());
-  if (j >= under_frames_.size()) {
-    under_frames_.push_back({});
+  auto pr = under_terms_.insert(t.term);
+  if (pr.second) { // inserted succesfully
+    under_frames_.push_back(t);
+    // under_states_ = solver_->make_term(Or, under_states_, t.term);
+    logger.log(3, "add to under_frame U = {}", t.term);
   }
-  logger.log(3, "add to under_frame: u[{}] = {}", (j), t.term);
-  under_frames_[j].push_back(t);
 }
 
 // we assume that curr and succ are already cubes in boolean variables
@@ -601,7 +637,12 @@ bool IC3CAR::is_cex_valid(smt::TermVec & out)
     return false;
   }
   pop_solver_context();
-
+  // Term curr = out.at(0);
+  for (unsigned i = 1; i < out.size(); i ++) {
+    if (!is_connected(out.at(i - 1), out.at(i))) {
+      return false;
+    }
+  }
   // now check the connection in the abstract system
 
   return true;
@@ -609,13 +650,12 @@ bool IC3CAR::is_cex_valid(smt::TermVec & out)
 // In is_blocked, we will prove proof_goals can not reach bad states
 // s \in U[j] and j will not change
 bool IC3CAR::is_blocked(ProofGoalQueue & proof_goals,
-                        int j,
                         std::vector<IC3Formula> & frame_tmp)
 {
-  UnorderedTermLevelMap term2level;
+  // UnorderedTermLevelMap term2level;
   // record the first term
   // term2level.emplace(proof_goals.top()->target.term, j);
-  logger.log(3, "is_blocked: current s is from U[{}]", j);
+  logger.log(3, "is_blocked: current s is from U[{}]", 1);
   while (!proof_goals.empty()) {
     const ProofGoal * pg = proof_goals.top();
     IC3Formula s = pg->target;
@@ -627,7 +667,7 @@ bool IC3CAR::is_blocked(ProofGoalQueue & proof_goals,
     // 1. check whether it has been traced back to initial
     if (pg->idx <= 0) {
       // went all the way back to bad, we need to trace back to initial
-      construct_trace(pg, cex_, term2level);
+      construct_trace(pg, cex_, term2level_);
       // since the first cex is at bad
       if (!is_cex_valid(cex_)) {
         logger.log(1, "Counterexample is wrong");
@@ -642,6 +682,7 @@ bool IC3CAR::is_blocked(ProofGoalQueue & proof_goals,
     }
 
     // 2. IsSATAssuming(s, T/\O'_l)
+    // INVARIANT: s must not be a bad state
     IC3Formula out;
     if (rel_ind_check(l, pg->target, out)) {
       // t(1) = getModel|primed_version
@@ -650,21 +691,28 @@ bool IC3CAR::is_blocked(ProofGoalQueue & proof_goals,
         conjuncts.push_back(ts_.curr(c));
       }
       IC3Formula t = ic3formula_conjunction(conjuncts);
-      add_to_under_frame(t, j + 1);  // add to U[j + 1]
-      term2level_.emplace(t.term, std::make_pair(pg->target.term, j));
+      add_to_under_frame(t);  // add to U[j + 1]
+      term2level_.emplace(t.term, std::make_pair(pg->target.term, 1));
       // Extending U
       // stack.push(t, l-1)
-      logger.log(3, "add new proof goal: ({}, {})", t.term, (((int)l) - 1));
+      logger.log(2, "add new proof goal: ({}, {})", t.term, (((int)l) - 1));
+      // we need to check whether state t is in bad
+      push_solver_context();
+      solver_->assert_formula(t.term);
+      solver_->assert_formula(bad_);
+      bool is_sat = check_sat().is_sat();
+      pop_solver_context();
+      size_t trace_level = is_sat ? 0 : l;
       proof_goals.new_proof_goal(
-          t, l, pg);  // need to remove t from O[l-1], pass l -1 + 1
+          t, trace_level, pg);  // need to remove t from O[l-1], pass l -1 + 1
     } else {
       // stack.pop()
       proof_goals.pop();
       // uc := GetUnsatCore()
       // extending Over and Otmp. already it is current version
       // Unsat core is already in primed version and literals
-      logger.log(3,
-                 "UNSAT, check l+1 < {}: {} ",
+      logger.log(2,
+                 "UNSAT, check {}+1 < {}: {} ", l,
                  frames_.size(),
                  (l + 1 < frames_.size()));
       if (l + 1 < frames_.size()) {
@@ -672,9 +720,12 @@ bool IC3CAR::is_blocked(ProofGoalQueue & proof_goals,
             out);  // add not uc, here we store cubes only in frames
         // add (s, l+1) to stack
         // similar IC3 query O'[l+1] /\ !s' /\ T /\ s
+        // like propagation in IC3 
         // here we have used the unsat core
-        proof_goals.new_proof_goal(
-            s, l + 2);  // no need for store the predecessor, pass (l + 1) + 1
+        // can we drop this? it is only need for searching cex
+        // Backward CAR uses this for detecting deep cex
+        // proof_goals.new_proof_goal(
+            // s, l + 2);  // no need for store the predecessor, pass (l + 1) + 1
       } else {
         // we need to add a new frontier
         frame_tmp.push_back(out);
@@ -685,71 +736,69 @@ bool IC3CAR::is_blocked(ProofGoalQueue & proof_goals,
   return true;
 }
 
-int IC3CAR::pick_state(IC3Formula & out, int & idx)
-{
-  if (under_frames_.size() <= 1) {
-    TermVec inits;
-    solver_->push();
-    solver_->assert_formula(ts_.next(ts_.init()));
-    Result r = solver_->check_sat();
-    assert(r.is_sat());
-    // inits.push_back(ts_.init());
-    out = get_model_ic3formula();
-    solver_->pop();
-    for (Term t : out.children) {
-      inits.push_back(ts_.curr(t));
-    }
-    out = ic3formula_conjunction(inits);
-    logger.log(3, "Pick a state s: {}", out.term);
-    return 0;
-  }
-  // currently return the state in largest under approximation frame
-  size_t frame_idx = under_frames_.size() - 1;
-  std::random_device rd;   // obtain a random number from hardware
-  std::mt19937 gen(rd());  // seed the generator
-  std::uniform_int_distribution<> distr(
-      0, under_frames_[frame_idx].size() - 1);  // define the range
-  int tmp_idx = distr(gen);
-  if (idx >= 0 && idx < under_frames_[frame_idx].size()) {
-    out = under_frames_[frame_idx][idx];
-    idx++;
-  } else {
-    out = under_frames_[frame_idx][tmp_idx];
-    idx = tmp_idx;
-  }
-
-  return frame_idx;
-}
-
-Term IC3CAR::get_frame_formula(int frame_idx)
+Term IC3CAR::get_frame_formula(int frame_idx, bool has_init)
 {
   assert(frame_idx < frames_.size());
   if (frame_idx == 0) {
     return ts_.next(bad_);
   }
-  Term cnf = solver_->make_term(true);  // by default
+  Term cnf;
+  if (has_init) {
+    cnf = solver_->make_term(Not, ts_.init());
+    cnf = ts_.next(cnf); //not Init
+  }else {
+    cnf = solver_->make_term(true); // by default
+  }
+  
   for (IC3Formula & terms : frames_[frame_idx]) {
     // all IC3Formula is a conjunction of predicates
     IC3Formula negated_formula = ic3formula_negate(terms);
     cnf = solver_->make_term(And, cnf, negated_formula.term);
   }
-  logger.log(3, "over frame formula: {}", cnf);
+  logger.log(3, "over frame formula F[{}]: {}", frame_idx, cnf);
   return cnf;
 }
+
+// smt::Term IC3CAR::get_under_frame_formula(int frame_idx)
+// {
+//   assert(frame_idx < under_frames_.size());
+//   if (frame_idx == 0) {
+//     return ts_.init();
+//   }
+//   Term dnf = solver_->make_term(false);  // by default
+//   for (IC3Formula & terms : under_frames_[frame_idx]) {
+//     // all IC3Formula is a disjunction of predicates
+//     dnf = solver_->make_term(Or, dnf, terms.term);
+//   }
+//   logger.log(3, "over frame formula: {}", dnf);
+//   return dnf;
+// }
 
 bool IC3CAR::is_valid_invariants()
 {
   // invar by default not intersects wit bad_
   push_solver_context();
-  // check whether invar & T => invar'
+  // check whether P & invar & T => invar'
   // solver_->assert_formula(solver_->make_term(Not, bad_)); // P
   solver_->assert_formula(invar_); // invar
-  assert_trans_label(); // T
-  solver_->assert_formula(solver_->make_term(Not,ts_.next(invar_))); // not invar'
+  solver_->assert_formula(conc_ts_.trans());
+  solver_->assert_formula(solver_->make_term(Not, conc_ts_.next(invar_))); // not invar'
   // solver_->assert_formula(solver_->make_term(Not, ts_.next(bad_))); // P'
   bool is_valid = check_sat().is_unsat();
+  logger.log(3, "system invariant: {}", is_valid);
   pop_solver_context();
-
+  push_solver_context();
+  solver_->assert_formula(invar_); // Invar
+  solver_->assert_formula(bad_); // bad_
+  is_valid = check_sat().is_unsat();
+  logger.log(3, "Invar & bad empty: {}", is_valid);
+  pop_solver_context();
+  push_solver_context();
+  solver_->assert_formula(conc_ts_.init()); // init
+  solver_->assert_formula(solver_->make_term(Not, invar_)); // not Invar
+  is_valid = check_sat().is_unsat();
+  logger.log(3, "I => Invar: {}", is_valid);
+  pop_solver_context();
   return is_valid;
 }
 
@@ -761,14 +810,19 @@ bool IC3CAR::reach_fixed_point()
   logger.log(2, "current number of frames: {}", frames_.size());
   assert(frames_.size() > 1);
   Term disjuncts = get_frame_formula(0);
+  logger.log(2, "F[0]: {}", disjuncts);
   disjuncts = solver_->make_term(Or, disjuncts, get_frame_formula(1));
+  logger.log(2, "F[0] \\/ F[1]: {}", disjuncts);
   for (int i = 2; i < frames_.size(); i++) {
     Term curr_frame = get_frame_formula(i);
     solver_->push();
     // solver_->assert_formula(solver_->make_term(Not, bad_label_));
     // solver_->assert_formula(solver_->make_term(Not, trans_label_));
-    solver_->assert_formula(solver_->make_term(
-        And, solver_->make_term(Not, disjuncts), curr_frame));
+    solver_->assert_formula(solver_->make_term(Not, disjuncts));
+    solver_->assert_formula(curr_frame);
+    // assert_trans_label();
+    // solver_->assert_formula(solver_->make_term(
+        // And, solver_->make_term(Not, disjuncts), curr_frame));
     logger.log(
         3, "check !disj formula: {}", solver_->make_term(Not, disjuncts));
     logger.log(3,
@@ -781,12 +835,71 @@ bool IC3CAR::reach_fixed_point()
     solver_->pop();
     if (reached) {
       invar_ = solver_->make_term(Not, ts_.curr(disjuncts));
-      logger.log(2, "is valid invariant ? {}", is_valid_invariants());
+      // invar_ = solver_->make_term(Or, invar_, ts_.init());
+      logger.log(2, "is valid invariant {} ? {}", invar_, is_valid_invariants());
       return true;
     }
     // continue to add formulas
     disjuncts = solver_->make_term(Or, disjuncts, curr_frame);
   }
+  return false;
+}
+
+bool IC3CAR::frames_meet(IC3Formula& t)
+{
+  Term over_frame_formula = get_frame_formula(frames_.size() - 1);
+  push_solver_context();
+  solver_->assert_formula(under_states_);
+  solver_->assert_formula(over_frame_formula);
+  assert_trans_label();
+  Result r = check_sat();
+  if (r.is_sat()) {
+    t = get_model_ic3formula();
+  }
+  pop_solver_context();
+  return r.is_sat();
+}
+
+bool IC3CAR::reaches_bad(IC3Formula & out)
+{
+  // check if current frame can reach init_ and states from init
+  Term frontier = get_frame_formula(frames_.size() - 1);
+  for (const auto & s : under_frames_) {
+    push_solver_context();
+    solver_->assert_formula(s.term);  // current state
+    solver_->assert_formula(frontier);
+    assert_trans_label();
+    // check s /\ T /\ F_i
+    Result r = check_sat();
+    if (r.is_sat()) {
+      out = get_model_ic3formula();
+      // should store this relation
+      term2level_.emplace(out.term, make_pair(s.term, 1));
+      pop_solver_context();
+      return true;
+    }
+    assert (r.is_unsat());
+    pop_solver_context();
+  }
+  // check out the reachability for initial states
+  push_solver_context();
+  solver_->assert_formula(frontier);
+  assert_trans_label();
+  solver_->assert_formula(ts_.init());
+  // I /\ T /\ Fi
+  Result r = check_sat();
+  if (r.is_sat()) {
+    out = get_model_ic3formula();
+    IC3Formula s = get_model_ic3formula(false);
+    term2level_.emplace(out.term, make_pair(s.term, 1));
+    term2level_.emplace(s.term, make_pair(solver_->make_term(false), -1));
+    pop_solver_context();
+    add_to_under_frame(out);
+    return true;
+  }
+  assert (r.is_unsat());
+  pop_solver_context();
+
   return false;
 }
 
@@ -811,46 +924,33 @@ ProverResult IC3CAR::step(int i)
   logger.log(1, "Blocking phase at frame {}", i);
   // set the first to be !P
 
-  int cube_idx = 0;  // the cube in the frontier
-  // 1. first pick a state from the U
-  // int level = under_frames_.size() - 1;
-  IC3Formula goal;
-  int j = pick_state(goal, cube_idx);
-
-  if (j == 0) {
-    // if it is not inserted successfully, then it must exist
-    term2level_.emplace(goal.term,
-                        std::make_pair(solver_->make_term(false), -1));
-  } else {
-    // this term should exists
-    assert(term2level_.find(goal.term) != term2level_.end());
-  }
-
   // 2. O_tmp = not P
   // Term prop = smart_not(bad_);  // must be a predicate?
   std::vector<IC3Formula> frame_tmp;  // initially it is true
   // frame_tmp.push_back();
 
+  // we need to handle with this situation
   ProofGoalQueue proof_goals;
-  // int frame_level = frames_.size() - 1;
-  //  we need to have the
-  proof_goals.new_proof_goal(goal, frames_.size(), nullptr);
+  // check U[j] /\\ T /\\ O'[l]
+  IC3Formula goal;
+  while (reaches_bad(goal)) {
+    //  we need to have the
+    proof_goals.new_proof_goal(goal, frames_.size() - 1, nullptr);
 
-  bool blocked = is_blocked(proof_goals, j, frame_tmp);
-
-  if (!blocked) {
-    return ProverResult::FALSE;
-  } else {
-    if (reach_fixed_point()) {
-      return ProverResult::TRUE;
+    if (!is_blocked(proof_goals, frame_tmp)) {
+      return ProverResult::FALSE;
     }
-    // we need to push forward the over-approximate sets
-    frames_.push_back(frame_tmp);
-    logger.log(3,
-               "added new frame[{}]: {}",
-               (frames_.size() - 1),
-               get_frame_formula(frames_.size() - 1));
   }
+  // all states have been blocked
+  if (reach_fixed_point()) {
+    return ProverResult::TRUE;
+  }
+  // we need to push forward the over-approximate sets
+  frames_.push_back(frame_tmp);
+  logger.log(3,
+             "added new frame[{}]: {}",
+             (frames_.size() - 1),
+             get_frame_formula(frames_.size() - 1));
 
   reset_solver();
 
@@ -885,9 +985,11 @@ ProverResult IC3CAR::check_until(int k)
       if (s == REFINE_SUCCESS) {
         // we need to clear the under frames
         // only over frames can be kept
-        under_frames_.clear();
-        push_under_frame();  // set the U[0] = I
+        reset_under_frame();  // set the U[0] = I
         term2level_.clear();
+        //frames_.clear();
+        cex_.clear();
+        //frames_.push_back({});  // we set O[0] = !P
         // seems that msat favours reset
         // frames_.clear(); 
         // push_over_frontier();
@@ -949,7 +1051,8 @@ void IC3CAR::abstract()
 // change a = b to a <= b, a >= b
 bool IC3CAR::extend_predicate(const smt::Term & pred, TermPair & out)
 {
-  if (pred->get_sort()->get_sort_kind() == BOOL || pred->get_op() != Equal) {
+  if (pred->get_op() != Equal) {
+    logger.log(2, "pred->get_op {}", pred);
     return false;
   }
 
@@ -978,6 +1081,7 @@ void IC3CAR::extend_predicate(UnorderedTermSet& out)
   UnorderedTermSet tmp_preds;
   for (const auto& p : out) {
     TermPair tp;
+    logger.log(2, "orig predicate {}", p);
     bool is_extended = extend_predicate(p, tp);
     if (is_extended) {
       tmp_preds.insert(tp.first);
@@ -999,6 +1103,35 @@ RefineResult IC3CAR::refine()
     // if there are no transitions, then this is a concrete CEX
     return REFINE_NONE;
   }
+
+  
+  // {
+  //   UnorderedTermSet out;
+  //   RefineResult rr = functional_refine(out);
+  //   logger.log(3, "RefineResult: {}", rr);
+  //   UnorderedTermSet preds;
+  //   for (auto const& t : out) {
+  //     get_predicates(solver_, t, preds, false, false, true);
+  //   }
+    
+  //   TermVec fresh_preds;
+  //   for (auto const & p : preds) {
+  //     if (predset_.find(p) == predset_.end()) {
+  //       // unseen predicate
+  //       logger.log(2, "functional new predicate {}", p);
+  //       TermPair tp;
+  //       bool is_extended = extend_predicate(p, tp);
+  //       if (options_.ia_more_preds_ && is_extended) {
+  //         fresh_preds.push_back(tp.first);
+  //         fresh_preds.push_back(tp.second);
+  //       }else {
+  //         fresh_preds.push_back(p);
+  //       }
+  //     }
+  //   }
+  // }
+  // check the predicates
+
 
   size_t cex_length = cex_.size();
 
@@ -1128,6 +1261,87 @@ RefineResult IC3CAR::refine()
 
   // able to refine the system to rule out this abstract counterexample
   return RefineResult::REFINE_SUCCESS;
+}
+
+void IC3CAR::conjunctive_assumptions(const Term & term,
+                                    UnorderedTermSet & used_lbls,
+                                    TermVec & lbls,
+                                    TermVec & assumps)
+{
+  assert(solver_context_);  // should only add assumptions at non-zero context
+  TermVec tmp;
+  conjunctive_partition(term, tmp, true);
+  Term lbl;
+  for (const auto & tt : tmp) {
+    assert(tt->get_sort() == boolsort_);
+    lbl = label(tt);
+    if (used_lbls.find(lbl) == used_lbls.end()) {
+      used_lbls.insert(lbl);
+      lbls.push_back(lbl);
+      assumps.push_back(tt);
+      solver_->assert_formula(solver_->make_term(Implies, lbl, tt));
+      logger.log(3, "refine: add formula to solver {}", solver_->make_term(Implies, lbl, tt));
+    }
+  }
+}
+
+RefineResult IC3CAR::functional_refine(smt::UnorderedTermSet& out)
+{
+  assert(!solver_context_);
+  assert(cex_.size());
+  // This function will unroll the counterexample trace functionally one step at
+  // a time
+  // it will introduce fresh symbols for input variables and will keep
+  // track of old model values to plug into inputs if an axiom is learned
+  Result r;
+  UnorderedTermMap last_model_vals;
+
+  assert(!ts_.inputvars().size());
+  UnorderedTermSet inputvars;
+  // add implicit input variables (states with no update)
+  const UnorderedTermMap & state_updates = ts_.state_updates();
+  for (const auto & sv : ts_.statevars()) {
+    if (state_updates.find(sv) == state_updates.end()) {
+      inputvars.insert(sv);
+    }
+  }
+
+  //push_solver_context();
+
+  // due to simplifications can end up with the same terms
+  // for the constraints, avoid duplicating labels by keeping
+  // track with a set
+  UnorderedTermSet used_lbls;
+  TermVec lbls, assumps;
+  Term lbl, unrolled;
+  FunctionalUnroller f_unroller(conc_ts_, 0, "_AT");
+
+  unrolled = f_unroller.at_time(ts_.init(), 0);
+  //conjunctive_assumptions(unrolled, used_lbls, lbls, assumps);
+
+  for (size_t i = 0; i < cex_.size(); ++i) {
+    unrolled = f_unroller.at_time(solver_->make_term(true), i);
+    //conjunctive_assumptions(unrolled, used_lbls, lbls, assumps);
+    solver_->push();
+    solver_->assert_formula(f_unroller.untime(unrolled));
+    logger.log(3, "functional formula: {}", f_unroller.untime(unrolled));
+    solver_->assert_formula(bad_);
+    r = solver_->check_sat();
+    solver_->pop();
+    if (r.is_sat()) {
+      // save model values
+      Term iv_j;
+      for (const auto & iv : inputvars) {
+        for (size_t j = 0; j < i; ++j) {
+          iv_j = f_unroller.at_time(iv, j);
+          last_model_vals[iv_j] = solver_->get_value(iv_j);
+        }
+      }
+      return REFINE_NONE;
+    }
+  }
+
+  return REFINE_SUCCESS;
 }
 
 void IC3CAR::reset_solver()
