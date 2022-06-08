@@ -548,10 +548,12 @@ void IC3CAR::construct_trace(const ProofGoal * pg,
 
   out.clear();
 
+  TermVec tmp;
+
   // out.push_back(bad_); //we need to
   Term next;
   Term curr = pg->target.term;
-  out.push_back(pg->target.term);
+  tmp.push_back(pg->target.term);
   // while (pg) {
   //   curr = pg->target.term;
   //   abstract_cube(pg->target, next);
@@ -578,7 +580,7 @@ void IC3CAR::construct_trace(const ProofGoal * pg,
       break;
     }
     Term prev = pair.first;
-    out.push_back(prev);
+    tmp.push_back(prev);
     curr = prev;
     // abstract_cube(c, curr);
     //     connected = connected || is_connected(curr, next);
@@ -613,7 +615,11 @@ void IC3CAR::construct_trace(const ProofGoal * pg,
   //   out.push_back(ts_.init());
   // }
 
-  std::reverse(out.begin(), out.end());
+  std::reverse(tmp.begin(), tmp.end());
+  for (auto & s : tmp) {
+    out.push_back(ts_.curr(s));
+  }
+
 }
 
 // last overlaps with bad and fist with initial
@@ -890,9 +896,11 @@ bool IC3CAR::reaches_bad(IC3Formula & out)
   Result r = check_sat();
   if (r.is_sat()) {
     out = get_model_ic3formula();
-    IC3Formula s = get_model_ic3formula(false);
-    term2level_.emplace(out.term, make_pair(s.term, 1));
-    term2level_.emplace(s.term, make_pair(solver_->make_term(false), -1));
+    // we may just add the term init
+    // IC3Formula s = get_model_ic3formula(false);
+    auto next_init = ts_.next(ts_.init());
+    term2level_.emplace(out.term, make_pair(next_init, 1));
+    term2level_.emplace(next_init, make_pair(solver_->make_term(false), -1));
     pop_solver_context();
     add_to_under_frame(out);
     return true;
