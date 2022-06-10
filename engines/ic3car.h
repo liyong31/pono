@@ -35,7 +35,8 @@
 
 namespace pono {
 
-using UnorderedTermLevelMap = std::unordered_map<smt::Term, std::pair<smt::Term, int>>;
+using UnorderedTermLevelMap =
+    std::unordered_map<smt::Term, std::pair<smt::Term, int>>;
 
 using TermPair = std::pair<smt::Term, smt::Term>;
 
@@ -45,9 +46,9 @@ class IC3CAR : public IC3
   // itp_se is the SolverEnum for the interpolator
 
   IC3CAR(const Property & p,
-        const TransitionSystem & ts,
-        const smt::SmtSolver & s,
-        PonoOptions opt = PonoOptions());
+         const TransitionSystem & ts,
+         const smt::SmtSolver & s,
+         PonoOptions opt = PonoOptions());
 
   virtual ~IC3CAR() {}
 
@@ -80,8 +81,10 @@ class IC3CAR : public IC3
   ///< the under-approximate data structure.
   ///< a vector of the given Unit template
   ///< which changes depending on the implementation
-  std::vector<std::vector<IC3Formula>> under_frames_;
-//   smt::TermVec under_frame_labels_;  ///< labels to activate under frames
+  std::vector<IC3Formula> under_frames_;
+  smt::Term under_states_;
+  smt::UnorderedTermSet under_terms_;
+  //   smt::TermVec under_frame_labels_;  ///< labels to activate under frames
 
   // label for next bad
   smt::Term next_bad_label_;
@@ -109,7 +112,7 @@ class IC3CAR : public IC3
   TransitionSystem & prover_interface_ts() override { return conc_ts_; };
   // pure virtual method implementations
 
-  IC3Formula get_model_ic3formula() const override;
+  IC3Formula get_model_ic3formula(bool next = true) const;
 
   bool ic3formula_check_valid(const IC3Formula & u) const override;
 
@@ -123,7 +126,7 @@ class IC3CAR : public IC3
 
   RefineResult refine() override;
 
-  void push_under_frame();
+  void reset_under_frame();
 
   void reset_solver() override;
 
@@ -157,45 +160,62 @@ class IC3CAR : public IC3
 
   void push_over_frontier();
 
-  //virtual ProverResult step(int i);
+  // virtual ProverResult step(int i);
 
   virtual ProverResult check_until(int k);
 
-  bool is_blocked(ProofGoalQueue& proof_goals, int j
-                , std::vector<IC3Formula>& frame_tmp);
+  bool is_blocked(ProofGoalQueue & proof_goals,
+                  std::vector<IC3Formula> & frame_tmp);
 
-  void add_to_under_frame(IC3Formula& t, int j );
+  void add_to_under_frame(IC3Formula & t);
 
   virtual bool rel_ind_check(size_t i,
-                            const IC3Formula & c,
-                            IC3Formula & out,
-                            bool get_pred = true);
+                             const IC3Formula & c,
+                             IC3Formula & out,
+                             bool get_pred = true);
 
-  int pick_state(IC3Formula& out, int& idx);
+//   int pick_state(IC3Formula & out, int & idx);
 
-  void successor_generalization_and_fix(size_t i, const smt::Term & c,
-                                                 IC3Formula & pred);
-  smt::Term get_frame_formula(int frame_idx);
+  void successor_generalization_and_fix(size_t i,
+                                        const smt::Term & c,
+                                        IC3Formula & pred);
+  smt::Term get_frame_formula(int frame_idx, bool has_init = true);
+
+//   smt::Term get_under_frame_formula(int frame_idx);
 
   bool reach_fixed_point();
 
-  void construct_trace(const ProofGoal * pg, smt::TermVec & out, const UnorderedTermLevelMap& term2level);
+  void construct_trace(const ProofGoal * pg,
+                       smt::TermVec & out,
+                       const UnorderedTermLevelMap & term2level);
 
   // last overlaps with bad and fist with initial
   bool is_cex_valid(smt::TermVec & out);
 
   virtual ProverResult step(int i);
 
-  bool is_connected(const smt::Term& curr, const smt::Term& succ);
+  bool is_connected(const smt::Term & curr, const smt::Term & succ);
 
-  void abstract_cube(const IC3Formula& cube, smt::Term& out);
+  void abstract_cube(const IC3Formula & cube, smt::Term & out);
 
-  bool extend_predicate(const smt::Term& pred, TermPair& out);
+  bool extend_predicate(const smt::Term & pred, TermPair & out);
 
-  void extend_predicate(smt::UnorderedTermSet& out);
+  void extend_predicate(smt::UnorderedTermSet & out);
 
   bool is_valid_invariants();
 
+  RefineResult functional_refine(smt::UnorderedTermSet & out);
+
+  void conjunctive_assumptions(const smt::Term & term,
+                               smt::UnorderedTermSet & used_lbls,
+                               smt::TermVec & lbls,
+                               smt::TermVec & assumps);
+
+  bool frames_meet(IC3Formula & t);
+
+  virtual bool reaches_bad(IC3Formula & out);
+
+  void fix_if_intersects_bad(smt::TermVec & to_keep, const smt::TermVec & rem);
 };
 
 }  // namespace pono
