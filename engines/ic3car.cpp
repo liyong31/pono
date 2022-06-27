@@ -380,26 +380,39 @@ bool IC3CAR::rel_ind_check(size_t i,
   assert(!s.disjunction);
 
   assert(solver_context_ == 0);
-  push_solver_context();
 
   // add O'[i]
   // assert frame labels
-  {
-    // solver_->assert_formula(next_bad_label_); // add next bad
-    //  we now obtain the O'_l
-    Term o = get_frame_formula(i);
-    solver_->assert_formula(o);
-    logger.log(3, "assert O'[l]: {}", o);
-  }
+  
+  // solver_->assert_formula(next_bad_label_); // add next bad
+  //  we now obtain the O'_l
+  Term o = get_frame_formula(i);
+  
+  push_solver_context();
+
+  solver_->assert_formula(o);
+  logger.log(3, "assert O'[l]: {}", o);
+  
   // add Trans
   assert_trans_label();
+
+  Result r = check_sat();
+
+  if (r.is_unsat()) {
+    pop_solver_context();
+    TermVec tmp;
+    tmp.push_back(solver_true_);
+    out = ic3formula_conjunction(tmp);
+    return r.is_sat();
+  }
+
   // IC3Formula negated = ic3formula_negate(s);
   // solver_->assert_formula(negated.term);
   logger.log(3, "assert trans label: {}", ts_.trans());
   // solver_->assert_formula(ts_.trans());
   // use assumptions for c' so we can get cheap initial
   // generalization if the check is unsat
-
+  
   // NOTE: relying on same order between assumps_ and c.children
   assumps_.clear();
   // Obtain the literal form of the state s
@@ -420,9 +433,11 @@ bool IC3CAR::rel_ind_check(size_t i,
       assumps_.push_back(lbl);
       logger.log(3, "add new lbl to assumps: {}, {}", lbl, pred);
     }
+    // walk around for T /\\ O being unsat
+    // assumps_.push_back(trans_label_);
   }
   logger.log(2, "Check s /\\ T /\\ O'[{}]", i);
-  Result r = check_sat_assuming(assumps_);
+  r = check_sat_assuming(assumps_);
   if (r.is_sat()) {
     out = get_model_ic3formula();
     if (get_pred) {
@@ -451,6 +466,7 @@ bool IC3CAR::rel_ind_check(size_t i,
     // might need to be re-added if it
     // ends up intersecting with initial
     assert(assumps_.size() == s.children.size());
+    // ignore the trans_label_
     for (size_t i = 0; i < assumps_.size(); ++i) {
       if (core.find(assumps_.at(i)) == core.end()) {
         rem.push_back(s.children.at(i));
@@ -1271,86 +1287,6 @@ RefineResult IC3CAR::refine()
   return RefineResult::REFINE_SUCCESS;
 }
 
-void IC3CAR::conjunctive_assumptions(const Term & term,
-                                    UnorderedTermSet & used_lbls,
-                                    TermVec & lbls,
-                                    TermVec & assumps)
-{
-  assert(solver_context_);  // should only add assumptions at non-zero context
-  TermVec tmp;
-  conjunctive_partition(term, tmp, true);
-  Term lbl;
-  for (const auto & tt : tmp) {
-    assert(tt->get_sort() == boolsort_);
-    lbl = label(tt);
-    if (used_lbls.find(lbl) == used_lbls.end()) {
-      used_lbls.insert(lbl);
-      lbls.push_back(lbl);
-      assumps.push_back(tt);
-      solver_->assert_formula(solver_->make_term(Implies, lbl, tt));
-      logger.log(3, "refine: add formula to solver {}", solver_->make_term(Implies, lbl, tt));
-    }
-  }
-}
-
-RefineResult IC3CAR::functional_refine(smt::UnorderedTermSet& out)
-{
-  assert(!solver_context_);
-  assert(cex_.size());
-  // This function will unroll the counterexample trace functionally one step at
-  // a time
-  // it will introduce fresh symbols for input variables and will keep
-  // track of old model values to plug into inputs if an axiom is learned
-  Result r;
-  UnorderedTermMap last_model_vals;
-
-  assert(!ts_.inputvars().size());
-  UnorderedTermSet inputvars;
-  // add implicit input variables (states with no update)
-  const UnorderedTermMap & state_updates = ts_.state_updates();
-  for (const auto & sv : ts_.statevars()) {
-    if (state_updates.find(sv) == state_updates.end()) {
-      inputvars.insert(sv);
-    }
-  }
-
-  //push_solver_context();
-
-  // due to simplifications can end up with the same terms
-  // for the constraints, avoid duplicating labels by keeping
-  // track with a set
-  UnorderedTermSet used_lbls;
-  TermVec lbls, assumps;
-  Term lbl, unrolled;
-  FunctionalUnroller f_unroller(conc_ts_, 0, "_AT");
-
-  unrolled = f_unroller.at_time(ts_.init(), 0);
-  //conjunctive_assumptions(unrolled, used_lbls, lbls, assumps);
-
-  for (size_t i = 0; i < cex_.size(); ++i) {
-    unrolled = f_unroller.at_time(solver_->make_term(true), i);
-    //conjunctive_assumptions(unrolled, used_lbls, lbls, assumps);
-    solver_->push();
-    solver_->assert_formula(f_unroller.untime(unrolled));
-    logger.log(3, "functional formula: {}", f_unroller.untime(unrolled));
-    solver_->assert_formula(bad_);
-    r = solver_->check_sat();
-    solver_->pop();
-    if (r.is_sat()) {
-      // save model values
-      Term iv_j;
-      for (const auto & iv : inputvars) {
-        for (size_t j = 0; j < i; ++j) {
-          iv_j = f_unroller.at_time(iv, j);
-          last_model_vals[iv_j] = solver_->get_value(iv_j);
-        }
-      }
-      return REFINE_NONE;
-    }
-  }
-
-  return REFINE_SUCCESS;
-}
 
 void IC3CAR::reset_solver()
 {

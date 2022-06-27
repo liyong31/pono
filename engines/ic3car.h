@@ -204,13 +204,6 @@ class IC3CAR : public IC3
 
   bool is_valid_invariants();
 
-  RefineResult functional_refine(smt::UnorderedTermSet & out);
-
-  void conjunctive_assumptions(const smt::Term & term,
-                               smt::UnorderedTermSet & used_lbls,
-                               smt::TermVec & lbls,
-                               smt::TermVec & assumps);
-
   bool frames_meet(IC3Formula & t);
 
   virtual bool reaches_bad(IC3Formula & out);
